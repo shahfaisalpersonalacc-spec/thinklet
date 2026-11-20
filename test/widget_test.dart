@@ -6,14 +6,11 @@ import 'package:http/testing.dart';
 import 'package:thinklet/claude_service.dart';
 import 'package:thinklet/home_page.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:thinklet/diff.dart';
 import 'package:thinklet/main.dart';
 import 'package:thinklet/widgets/common.dart';
 
 void main() {
-  setUpAll(() => GoogleFonts.config.allowRuntimeFetching = false);
-
   testWidgets('home shows brand, mode switch and actions', (tester) async {
     await tester.pumpWidget(const ThinkletApp());
     await tester.pump(const Duration(seconds: 1));

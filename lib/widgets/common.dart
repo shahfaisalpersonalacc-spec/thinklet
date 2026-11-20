@@ -224,59 +224,16 @@ class _LogoPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-/// Slowly drifting decorative ring.
-class DriftCircle extends StatefulWidget {
-  const DriftCircle({
-    super.key,
-    required this.size,
-    required this.seconds,
-    this.dashed = false,
-    this.reverse = false,
-  });
+/// Decorative ring (still).
+class DriftCircle extends StatelessWidget {
+  const DriftCircle({super.key, required this.size, this.dashed = false});
   final double size;
-  final int seconds;
   final bool dashed;
-  final bool reverse;
 
   @override
-  State<DriftCircle> createState() => _DriftCircleState();
-}
-
-class _DriftCircleState extends State<DriftCircle>
-    with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(
-    vsync: this,
-    duration: Duration(seconds: widget.seconds),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ExcludeSemantics(
-      child: AnimatedBuilder(
-        animation: _c,
-        builder: (_, _) {
-          final t = widget.reverse ? 1 - _c.value : _c.value;
-          final s = math.sin(math.pi * t);
-          return Transform.translate(
-            offset: Offset(-14 * s, 10 * s),
-            child: Transform.rotate(
-              angle: 2 * math.pi * t,
-              child: CustomPaint(
-                size: Size.square(widget.size),
-                painter: _RingPainter(widget.dashed),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
+  Widget build(BuildContext context) => ExcludeSemantics(
+    child: CustomPaint(size: Size.square(size), painter: _RingPainter(dashed)),
+  );
 }
 
 class _RingPainter extends CustomPainter {
@@ -306,55 +263,29 @@ class _RingPainter extends CustomPainter {
   bool shouldRepaint(covariant _RingPainter old) => old.dashed != dashed;
 }
 
-/// Three bobbing dots used in empty/hint states.
-class BobDots extends StatefulWidget {
+/// Three still dots used in empty/hint states.
+class BobDots extends StatelessWidget {
   const BobDots({super.key});
-  @override
-  State<BobDots> createState() => _BobDotsState();
-}
-
-class _BobDotsState extends State<BobDots> with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1400),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     const colors = [TC.accent, TC.purple, TC.dot];
     return ExcludeSemantics(
-      child: AnimatedBuilder(
-        animation: _c,
-        builder: (_, _) => Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (var i = 0; i < 3; i++) ...[
-              if (i > 0) const SizedBox(width: 8),
-              Transform.translate(
-                offset: Offset(
-                  0,
-                  -6 *
-                      (0.5 -
-                          0.5 * math.cos(2 * math.pi * (_c.value - i * 0.143))),
-                ),
-                child: Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: colors[i],
-                    shape: BoxShape.circle,
-                  ),
-                ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < 3; i++) ...[
+            if (i > 0) const SizedBox(width: 8),
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: colors[i],
+                shape: BoxShape.circle,
               ),
-            ],
+            ),
           ],
-        ),
+        ],
       ),
     );
   }

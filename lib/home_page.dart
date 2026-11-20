@@ -422,12 +422,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         const Positioned(
           top: -70,
           right: -60,
-          child: DriftCircle(size: 220, seconds: 18, dashed: true),
+          child: DriftCircle(size: 220, dashed: true),
         ),
         const Positioned(
           top: -20,
           right: -10,
-          child: DriftCircle(size: 120, seconds: 12, reverse: true),
+          child: DriftCircle(size: 120),
         ),
         SafeArea(
           child: ExcludeFocus(
@@ -660,12 +660,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         const Positioned(
           top: -110,
           right: -80,
-          child: DriftCircle(size: 340, seconds: 20, dashed: true),
+          child: DriftCircle(size: 340, dashed: true),
         ),
         const Positioned(
           top: -30,
           right: 10,
-          child: DriftCircle(size: 180, seconds: 14, reverse: true),
+          child: DriftCircle(size: 180),
         ),
         ExcludeFocus(
           excluding: _histOpen,

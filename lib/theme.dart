@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 /// Thinklet design tokens (dark theme, lime accent, purple for tone).
 class TC {
@@ -32,7 +31,8 @@ TextStyle inter({
   Color color = TC.text,
   double? height,
   double? spacing,
-}) => GoogleFonts.inter(
+}) => TextStyle(
+  fontFamily: 'Inter',
   fontSize: size,
   fontWeight: weight,
   color: color,
@@ -46,7 +46,8 @@ TextStyle grotesk({
   Color color = TC.text,
   double? height,
   double? spacing,
-}) => GoogleFonts.spaceGrotesk(
+}) => TextStyle(
+  fontFamily: 'SpaceGrotesk',
   fontSize: size,
   fontWeight: weight,
   color: color,
