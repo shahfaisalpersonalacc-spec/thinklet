@@ -13,6 +13,10 @@ import 'widgets/common.dart';
 
 /// Build-time key from .env: flutter run --dart-define-from-file=.env
 const _apiKey = String.fromEnvironment('ANTHROPIC_API_KEY');
+
+/// Hosted web build: --dart-define=CLAUDE_PROXY=/api/claude sends requests
+/// to our server, which holds the key (see vercel/api/claude.js).
+const _proxy = String.fromEnvironment('CLAUDE_PROXY');
 const _noKeyMessage =
     'No API key. Add ANTHROPIC_API_KEY to .env and run with '
     '--dart-define-from-file=.env';
@@ -92,8 +96,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool _swipedOnce = false; // until then, hint that the cards can be swiped
   int _peek = 0; // bumped to make the pager peek at the text once
   late final ClaudeService _claude =
-      widget.claude ?? ClaudeService(apiKey: _apiKey);
-  bool get _noKey => widget.claude == null && _apiKey.isEmpty;
+      widget.claude ??
+      (_apiKey.isEmpty && _proxy.isNotEmpty
+          ? ClaudeService.proxy(_proxy)
+          : ClaudeService(apiKey: _apiKey));
+  bool get _noKey =>
+      widget.claude == null && _apiKey.isEmpty && _proxy.isEmpty;
   String _lastText = '';
 
   Mode _mode = Mode.correct;

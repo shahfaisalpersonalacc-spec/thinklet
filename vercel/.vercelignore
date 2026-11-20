@@ -1,0 +1,3 @@
+# Never upload local secrets or the CLI's link folder.
+.env*
+.vercel

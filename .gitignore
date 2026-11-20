@@ -46,3 +46,7 @@ app.*.map.json
 
 # Secrets
 .env
+
+# Vercel deploy: copied web build and local project link
+/vercel/public/
+/vercel/.vercel/

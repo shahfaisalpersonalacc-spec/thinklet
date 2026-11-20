@@ -77,12 +77,20 @@ class ClaudeException implements Exception {
 /// Dart has no official Anthropic SDK, so this uses raw HTTP.
 class ClaudeService {
   ClaudeService({required this.apiKey, http.Client? client})
-    : _client = client ?? http.Client();
+    : endpoint = _anthropic,
+      _client = client ?? http.Client();
+
+  /// Calls through our own server (e.g. "/api/claude" on Vercel), which
+  /// holds the API key, so no key ships inside the app.
+  ClaudeService.proxy(this.endpoint, {http.Client? client})
+    : apiKey = '',
+      _client = client ?? http.Client();
 
   final String apiKey;
+  final String endpoint;
   final http.Client _client;
 
-  static const _endpoint = 'https://api.anthropic.com/v1/messages';
+  static const _anthropic = 'https://api.anthropic.com/v1/messages';
   static const _model = 'claude-opus-5-5';
 
   static const _guard =
@@ -184,15 +192,17 @@ class ClaudeService {
     final http.Response response;
     try {
       response = await _client.post(
-        Uri.parse(_endpoint),
+        Uri.base.resolve(endpoint),
         headers: {
           'content-type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2026-10-21',
-          // Server-side fallback if the model declines the request.
-          'anthropic-beta': 'server-side-fallback-2026-07-01',
-          // Required for calling the API straight from a browser (web build).
-          'anthropic-dangerous-direct-browser-access': 'true',
+          if (apiKey.isNotEmpty) ...{
+            'x-api-key': apiKey,
+            'anthropic-version': '2026-10-21',
+            // Server-side fallback if the model declines the request.
+            'anthropic-beta': 'server-side-fallback-2026-07-01',
+            // Required for calling the API straight from a browser.
+            'anthropic-dangerous-direct-browser-access': 'true',
+          },
         },
         body: jsonEncode({
           'model': _model,

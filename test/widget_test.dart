@@ -423,6 +423,29 @@ void main() {
     expect(find.text('Copy definition'), findsNothing);
   });
 
+  test('proxy mode calls our server and sends no API key', () async {
+    late http.Request sent;
+    final fake = MockClient((req) async {
+      sent = req;
+      return http.Response(
+        jsonEncode({
+          'stop_reason': 'end_turn',
+          'content': [
+            {'type': 'text', 'text': 'Fixed.'},
+          ],
+        }),
+        200,
+      );
+    });
+    final out = await ClaudeService.proxy(
+      'https://thinklet.example/api/claude',
+      client: fake,
+    ).correct('fixd');
+    expect(out, 'Fixed.');
+    expect(sent.url.toString(), 'https://thinklet.example/api/claude');
+    expect(sent.headers.containsKey('x-api-key'), isFalse);
+  });
+
   test('diff flags only the changed words', () {
     final segs = diffSegments('i has went to office', 'I went to the office.');
     final changed = segs.where((s) => s.changed).map((s) => s.text).toList();
