@@ -472,11 +472,15 @@ class Typewriter extends StatefulWidget {
     required this.style,
     required this.caretColor,
     this.textDirection,
+    this.animate = true,
   });
   final String text;
   final TextStyle style;
   final Color caretColor;
   final TextDirection? textDirection;
+
+  /// False: show the whole text at once (it was already typed out before).
+  final bool animate;
 
   @override
   State<Typewriter> createState() => _TypewriterState();
@@ -491,7 +495,11 @@ class _TypewriterState extends State<Typewriter> {
   @override
   void initState() {
     super.initState();
-    _start();
+    if (widget.animate) {
+      _start();
+    } else {
+      _shown = widget.text.characters.length;
+    }
   }
 
   @override

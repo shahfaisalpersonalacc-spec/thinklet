@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 
 import 'claude_service.dart';
@@ -15,6 +16,9 @@ const _apiKey = String.fromEnvironment('ANTHROPIC_API_KEY');
 const _noKeyMessage =
     'No API key. Add ANTHROPIC_API_KEY to .env and run with '
     '--dart-define-from-file=.env';
+
+/// History button hidden for now; history is still recorded behind it.
+const _historyEnabled = false;
 
 enum Mode { correct, translate }
 
@@ -80,8 +84,13 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final _input = TextEditingController();
+  // Phone: swipe position between the text (0) and the result (1). Shared by
+  // the card pager and the indicator under it, so both move with the finger.
+  late final AnimationController _swipe;
+  bool _swipedOnce = false; // until then, hint that the cards can be swiped
+  int _peek = 0; // bumped to make the pager peek at the text once
   late final ClaudeService _claude =
       widget.claude ?? ClaudeService(apiKey: _apiKey);
   bool get _noKey => widget.claude == null && _apiKey.isEmpty;
@@ -108,6 +117,10 @@ class _HomePageState extends State<HomePage> {
   int _fixes = 0;
   String _translation = '';
   String _translatedLang = '';
+  // Each new translation types itself out once; seen again (after a swipe
+  // or a mode switch) it is shown whole.
+  int _trSeq = 0;
+  int _typedSeq = 0;
   EnglishResult? _english; // set when the target language is English
 
   bool _toneOpen = false;
@@ -133,6 +146,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _swipe = AnimationController.unbounded(vsync: this);
     _input.addListener(_onTextChanged);
     _lifecycle = AppLifecycleListener(
       onShow: _redrawText,
@@ -152,6 +166,7 @@ class _HomePageState extends State<HomePage> {
       t.cancel();
     }
     _lifecycle.dispose();
+    _swipe.dispose();
     _input.dispose();
     super.dispose();
   }
@@ -217,6 +232,7 @@ class _HomePageState extends State<HomePage> {
           _fixes = segs.where((s) => s.changed).length;
           _phases[mode] = Phase.done;
           _showResult[mode] = true;
+          if (!_swipedOnce) _peek++;
         });
         _addHistory('Corrected', text, out);
       } else if (lang == 'English') {
@@ -227,9 +243,11 @@ class _HomePageState extends State<HomePage> {
         setState(() {
           _english = r;
           _translation = r.toPlainText();
+          _trSeq++;
           _translatedLang = lang;
           _phases[mode] = Phase.done;
           _showResult[mode] = true;
+          if (!_swipedOnce) _peek++;
         });
         if (r.isDefinition) {
           final first = r.meanings.isEmpty
@@ -249,9 +267,11 @@ class _HomePageState extends State<HomePage> {
         setState(() {
           _english = null;
           _translation = out;
+          _trSeq++;
           _translatedLang = lang;
           _phases[mode] = Phase.done;
           _showResult[mode] = true;
+          if (!_swipedOnce) _peek++;
         });
         _addHistory(lang, text, out);
       }
@@ -415,7 +435,7 @@ class _HomePageState extends State<HomePage> {
                         left: 20,
                         right: 20,
                         bottom: 8,
-                        child: _swapButton(),
+                        child: _swipeBar(),
                       ),
                     ],
                   ),
@@ -444,43 +464,36 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// Phone: the text box, or the finished result in its place.
+  /// Phone: the text box and, once there is one, the result beside it. The
+  /// user swipes between the two cards.
   Widget _mobileSlot() {
-    final result = _onResult;
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 280),
-      switchInCurve: easeOutSoft,
-      switchOutCurve: Curves.easeIn,
-      layoutBuilder: (current, previous) => Stack(
-        fit: StackFit.passthrough,
-        alignment: Alignment.topCenter,
-        children: [...previous, ?current],
-      ),
-      transitionBuilder: (child, a) {
-        // The result slides in from the right, the text box from the left.
-        final fromRight = child.key != const ValueKey('slot-input');
-        return FadeTransition(
-          opacity: a,
-          child: SlideTransition(
-            position: Tween(
-              begin: Offset(fromRight ? 0.08 : -0.08, 0),
-              end: Offset.zero,
-            ).animate(a),
-            child: child,
-          ),
-        );
-      },
-      child: result
-          ? KeyedSubtree(
+    final result = !_hasResult
+        ? null
+        : AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            switchInCurve: easeOutSoft,
+            layoutBuilder: (current, previous) => Stack(
+              fit: StackFit.passthrough,
+              alignment: Alignment.topCenter,
+              children: [...previous, ?current],
+            ),
+            child: KeyedSubtree(
               key: ValueKey('slot-result-$_mode'),
               child: _mode == Mode.translate
                   ? _translationCard(web: false)
                   : _correctedCard(web: false),
-            )
-          : KeyedSubtree(
-              key: const ValueKey('slot-input'),
-              child: _inputCard(web: false),
             ),
+          );
+    return _SwipePager(
+      controller: _swipe,
+      page: _onResult ? 1 : 0,
+      peek: _peek,
+      onSwipe: (page) => setState(() {
+        _showResult[_mode] = page == 1;
+        _swipedOnce = true;
+      }),
+      first: _inputCard(web: false),
+      second: result,
     );
   }
 
@@ -492,25 +505,58 @@ class _HomePageState extends State<HomePage> {
     return e.kind == 'explanation' ? 'Meaning' : 'Translation';
   }
 
-  /// Floating switch: on the result it sits left and goes back to the text;
-  /// on the text it sits right and goes to the result.
-  Widget _swapButton() {
+  /// Floating indicator for the swipeable cards: a waving swipe hint, the two
+  /// page names (tappable too, for mouse and screen-reader users) and dots
+  /// that stretch and recolor live as the finger drags.
+  Widget _swipeBar() {
     final show = _hasResult && !_histOpen && !_toneOpen;
-    final onResult = _onResult;
-    Widget pill() {
-      final label = onResult ? 'Your text' : _resultName;
-      final color = _mode == Mode.translate ? TC.purple : TC.accent;
-      return Pressable(
-        label: onResult ? 'Back to your text' : 'Show $label',
-        radius: 20,
-        onTap: () => setState(() => _showResult[_mode] = !onResult),
-        child: Container(
-          height: 40,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+    final color = _mode == Mode.translate ? TC.purple : TC.accent;
+    void goTo(int page) => setState(() => _showResult[_mode] = page == 1);
+
+    Widget bar() => AnimatedBuilder(
+      animation: _swipe,
+      builder: (context, _) {
+        final p = _swipe.value.clamp(0.0, 1.0);
+        Widget label(String text, String semantics, double on, int page) =>
+            Pressable(
+              label: semantics,
+              radius: 18,
+              lift: false,
+              onTap: () => goTo(page),
+              child: Container(
+                height: 36,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                alignment: Alignment.center,
+                child: Text(
+                  text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: inter(
+                    size: 13,
+                    weight: FontWeight.w600,
+                    color: Color.lerp(TC.muted, color, on)!,
+                  ),
+                ),
+              ),
+            );
+        Widget dot(double on) => Container(
+          width: 6 + 14 * on,
+          height: 6,
+          margin: const EdgeInsets.symmetric(horizontal: 2.5),
+          decoration: BoxDecoration(
+            color: Color.lerp(TC.borderStrong, color, on),
+            borderRadius: BorderRadius.circular(3),
+          ),
+        );
+        return Container(
+          height: 44,
+          padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
           decoration: BoxDecoration(
             color: TC.surface,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: color.withValues(alpha: 0.6)),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+              color: Color.lerp(TC.border, color.withValues(alpha: 0.5), p)!,
+            ),
             boxShadow: const [
               BoxShadow(
                 color: Color(0x80000000),
@@ -522,44 +568,30 @@ class _HomePageState extends State<HomePage> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (onResult) ...[
-                Icon(Icons.arrow_back_rounded, size: 18, color: color),
-                const SizedBox(width: 8),
-              ],
-              Text(
-                label,
-                style: inter(size: 14, weight: FontWeight.w600, color: color),
+              _SwipeHint(active: !_swipedOnce),
+              Flexible(
+                child: label('Your text', 'Back to your text', 1 - p, 0),
               ),
-              if (!onResult) ...[
-                const SizedBox(width: 8),
-                Icon(Icons.arrow_forward_rounded, size: 18, color: color),
-              ],
+              dot(1 - p),
+              dot(p),
+              Flexible(child: label(_resultName, 'Show $_resultName', p, 1)),
             ],
           ),
-        ),
-      );
-    }
+        );
+      },
+    );
 
     return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520),
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 220),
-          transitionBuilder: (child, a) => FadeTransition(
-            opacity: a,
-            child: ScaleTransition(scale: a, child: child),
-          ),
-          child: !show
-              ? const SizedBox.shrink(key: ValueKey('swap-none'))
-              : Align(
-                  key: ValueKey('swap-$onResult-$_mode'),
-                  alignment: onResult
-                      ? Alignment.centerLeft
-                      : Alignment.centerRight,
-                  heightFactor: 1,
-                  child: pill(),
-                ),
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 260),
+        switchInCurve: easeOutSoft,
+        transitionBuilder: (child, a) => FadeTransition(
+          opacity: a,
+          child: ScaleTransition(scale: a, child: child),
         ),
+        child: show
+            ? KeyedSubtree(key: const ValueKey('swipe-bar'), child: bar())
+            : const SizedBox.shrink(key: ValueKey('swipe-none')),
       ),
     );
   }
@@ -722,18 +754,19 @@ class _HomePageState extends State<HomePage> {
     mainAxisAlignment: MainAxisAlignment.spaceBetween,
     children: [
       _brand(38, 20),
-      Stack(
-        clipBehavior: Clip.none,
-        children: [
-          RoundIconButton(
-            icon: Icons.history_rounded,
-            label: 'Open history',
-            onTap: () => setState(() => _histOpen = true),
-          ),
-          if (_history.isNotEmpty)
-            Positioned(top: -4, right: -4, child: _countBadge()),
-        ],
-      ),
+      if (_historyEnabled)
+        Stack(
+          clipBehavior: Clip.none,
+          children: [
+            RoundIconButton(
+              icon: Icons.history_rounded,
+              label: 'Open history',
+              onTap: () => setState(() => _histOpen = true),
+            ),
+            if (_history.isNotEmpty)
+              Positioned(top: -4, right: -4, child: _countBadge()),
+          ],
+        ),
     ],
   );
 
@@ -741,31 +774,32 @@ class _HomePageState extends State<HomePage> {
     mainAxisAlignment: MainAxisAlignment.spaceBetween,
     children: [
       _brand(40, 22),
-      Pressable(
-        onTap: () => setState(() => _histOpen = true),
-        radius: 22,
-        child: Container(
-          height: 44,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          decoration: BoxDecoration(
-            color: TC.surface,
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: TC.borderStrong),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.history_rounded, size: 18, color: TC.text),
-              const SizedBox(width: 8),
-              Text('History', style: inter(weight: FontWeight.w500)),
-              if (_history.isNotEmpty) ...[
+      if (_historyEnabled)
+        Pressable(
+          onTap: () => setState(() => _histOpen = true),
+          radius: 22,
+          child: Container(
+            height: 44,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+              color: TC.surface,
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(color: TC.borderStrong),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.history_rounded, size: 18, color: TC.text),
                 const SizedBox(width: 8),
-                _countBadge(),
+                Text('History', style: inter(weight: FontWeight.w500)),
+                if (_history.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  _countBadge(),
+                ],
               ],
-            ],
+            ),
           ),
         ),
-      ),
     ],
   );
 
@@ -1133,10 +1167,12 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (_error != null) add(_errorCard());
-    if (_phase == Phase.idle && _error == null && !(web && _toneOpen)) {
+    // Phone: no idle hint or "Reading…" line; the button and the scan line
+    // on the text box already show what is happening.
+    if (web && _phase == Phase.idle && _error == null && !_toneOpen) {
       add(_hint(web: web));
     }
-    if (_phase == Phase.checking) add(_status(web: web));
+    if (web && _phase == Phase.checking) add(_status(web: web));
     // On phones the finished card lives in the text box's slot instead.
     if (web && _phase == Phase.done && translate) {
       add(_translationCard(web: web));
@@ -1372,6 +1408,8 @@ class _HomePageState extends State<HomePage> {
     }
     final rtl = _isRtl(_translatedLang);
     final label = english?.kind == 'explanation' ? 'MEANING' : 'TRANSLATION';
+    final typeOut = _typedSeq != _trSeq;
+    _typedSeq = _trSeq;
     return Rise(
       key: ValueKey('tr$_req'),
       child: PanelCard(
@@ -1395,6 +1433,7 @@ class _HomePageState extends State<HomePage> {
               style: inter(size: rtl ? 18 : 16, height: 1.7),
               caretColor: TC.accent,
               textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
+              animate: typeOut,
             ),
             const SizedBox(height: 12),
             CopyButton(
@@ -2194,6 +2233,304 @@ class _LangStripState extends State<_LangStrip> {
               idleBorder: TC.borderStrong,
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+/// Two cards side by side that follow the finger: drag sideways and both
+/// slide (the one leaving shrinks and dims a little), let go and a spring
+/// carries on with the finger's speed to the nearer card, or the one the
+/// flick points to. Dragging past either end rubber-bands.
+///
+/// While settled only the shown card is built, so the hidden text box can't
+/// hold focus or be read out.
+class _SwipePager extends StatefulWidget {
+  const _SwipePager({
+    required this.controller,
+    required this.first,
+    required this.second,
+    required this.page,
+    required this.onSwipe,
+    required this.peek,
+  });
+
+  /// 0 = first card, 1 = second; values in between while moving.
+  final AnimationController controller;
+  final Widget first;
+
+  /// Null when there is nothing to swipe to.
+  final Widget? second;
+  final int page;
+  final ValueChanged<int> onSwipe;
+
+  /// Bumped to nudge toward the first card and back, hinting at the swipe.
+  final int peek;
+
+  @override
+  State<_SwipePager> createState() => _SwipePagerState();
+}
+
+class _SwipePagerState extends State<_SwipePager> {
+  static const _gap = 28.0; // keeps the hidden card out of the side margin
+  static final _spring = SpringDescription.withDampingRatio(
+    mass: 1,
+    stiffness: 300,
+    ratio: 0.86,
+  );
+
+  AnimationController get _c => widget.controller;
+  late int _target = widget.page;
+  // The last result card, kept while it slides away after being removed.
+  late Widget? _second = widget.second;
+  bool _dragging = false;
+  double _width = 1;
+  Timer? _peekTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Built straight onto the result (e.g. after a resize): match the
+    // indicator, after this frame so it isn't rebuilt mid-build.
+    if (_c.value != _target) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_dragging) _c.value = _target.toDouble();
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(_SwipePager old) {
+    super.didUpdateWidget(old);
+    if (widget.second != null) _second = widget.second;
+    final page = widget.second == null ? 0 : widget.page;
+    if (page != _target && !_dragging) _springTo(page);
+    if (widget.peek != old.peek) {
+      _peekTimer?.cancel();
+      _peekTimer = Timer(const Duration(milliseconds: 700), _doPeek);
+    }
+  }
+
+  @override
+  void dispose() {
+    _peekTimer?.cancel();
+    super.dispose();
+  }
+
+  void _springTo(int page, [double velocity = 0]) {
+    _target = page;
+    _c
+        .animateWith(
+          SpringSimulation(
+            _spring,
+            _c.value,
+            page.toDouble(),
+            velocity,
+            tolerance: const Tolerance(distance: 0.001, velocity: 0.01),
+          ),
+        )
+        .whenCompleteOrCancel(_settled);
+  }
+
+  /// Rebuild once still, to drop the hidden card (or a removed result).
+  void _settled() {
+    if (!mounted || _dragging || _c.isAnimating) return;
+    setState(() {
+      if (widget.second == null && _target == 0) _second = null;
+    });
+  }
+
+  void _doPeek() {
+    if (!mounted || _dragging || _target != 1 || _second == null) return;
+    _c
+        .animateTo(
+          0.9,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic,
+        )
+        .then((_) {
+          if (mounted && !_dragging && _target == 1) _springTo(1);
+        });
+  }
+
+  void _dragStart(DragStartDetails d) {
+    _peekTimer?.cancel();
+    _c.stop();
+    setState(() => _dragging = true);
+  }
+
+  void _dragUpdate(DragUpdateDetails d) {
+    final delta = -(d.primaryDelta ?? 0) / _width;
+    final v = _c.value;
+    // Past either end the card only moves a third as far (rubber band).
+    final outside = (v <= 0 && delta < 0) || (v >= 1 && delta > 0);
+    _c.value = (v + (outside ? delta / 3 : delta)).clamp(-0.12, 1.12);
+  }
+
+  void _dragEnd(double velocityPx) {
+    final v = -velocityPx / _width; // pages per second, + toward the result
+    final page = v.abs() > 0.7 ? (v > 0 ? 1 : 0) : (_c.value > 0.5 ? 1 : 0);
+    setState(() => _dragging = false);
+    _springTo(page, v);
+    if (page != widget.page) widget.onSwipe(page);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final second = _second;
+    final gestures = <Type, GestureRecognizerFactory>{
+      if (second != null)
+        _SwipeRecognizer:
+            GestureRecognizerFactoryWithHandlers<_SwipeRecognizer>(
+              () => _SwipeRecognizer(debugOwner: this),
+              (r) => r
+                ..onStart = _dragStart
+                ..onUpdate = _dragUpdate
+                ..onEnd = ((d) => _dragEnd(d.primaryVelocity ?? 0))
+                ..onCancel = (() => _dragEnd(0)),
+            ),
+    };
+    return LayoutBuilder(
+      builder: (context, c) {
+        _width = math.max(c.maxWidth, 1);
+        final span = c.maxWidth + _gap;
+        return RawGestureDetector(
+          gestures: gestures,
+          behavior: HitTestBehavior.translucent,
+          child: AnimatedBuilder(
+            animation: _c,
+            builder: (context, _) {
+              final moving = _dragging || _c.isAnimating;
+              final t = moving ? _c.value : _target.toDouble();
+              final p = t.clamp(0.0, 1.0);
+              Widget card(String key, Widget child, double dx, double away) =>
+                  KeyedSubtree(
+                    key: ValueKey(key),
+                    child: Transform.translate(
+                      offset: Offset(dx, 0),
+                      child: Transform.scale(
+                        scale: 1 - 0.06 * away,
+                        child: Opacity(opacity: 1 - 0.5 * away, child: child),
+                      ),
+                    ),
+                  );
+              return Stack(
+                fit: StackFit.passthrough,
+                alignment: Alignment.topCenter,
+                clipBehavior: Clip.none,
+                children: [
+                  if (second == null || moving || _target == 0)
+                    card('page-text', widget.first, -t * span, p),
+                  if (second != null && (moving || _target == 1))
+                    card('page-result', second, (1 - t) * span, 1 - p),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Horizontal drag that claims the gesture after a short, clearly sideways
+/// move, before the text box / selectable text under it can take it for
+/// text selection. Mostly-vertical moves are left to the page scroll. Touch
+/// and pen only: a mouse drag still selects text (the indicator is clickable).
+class _SwipeRecognizer extends HorizontalDragGestureRecognizer {
+  _SwipeRecognizer({super.debugOwner})
+    : super(
+        supportedDevices: {
+          PointerDeviceKind.touch,
+          PointerDeviceKind.stylus,
+          PointerDeviceKind.invertedStylus,
+          PointerDeviceKind.trackpad,
+          PointerDeviceKind.unknown,
+        },
+      );
+
+  Offset _down = Offset.zero;
+  double _dy = 0;
+
+  @override
+  void addAllowedPointer(PointerDownEvent event) {
+    _down = event.position;
+    _dy = 0;
+    super.addAllowedPointer(event);
+  }
+
+  @override
+  void handleEvent(PointerEvent event) {
+    if (event is PointerMoveEvent) _dy = (event.position - _down).dy;
+    super.handleEvent(event);
+  }
+
+  @override
+  bool hasSufficientGlobalDistanceToAccept(
+    PointerDeviceKind pointerDeviceKind,
+    double? deviceTouchSlop,
+  ) {
+    final dx = globalDistanceMoved.abs();
+    return dx > 6 && dx > _dy.abs() * 1.3;
+  }
+}
+
+/// Swipe icon that sways side to side until the user has swiped once.
+class _SwipeHint extends StatefulWidget {
+  const _SwipeHint({required this.active});
+  final bool active;
+
+  @override
+  State<_SwipeHint> createState() => _SwipeHintState();
+}
+
+class _SwipeHintState extends State<_SwipeHint>
+    with SingleTickerProviderStateMixin {
+  late final _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1600),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.active) _c.repeat();
+  }
+
+  @override
+  void didUpdateWidget(_SwipeHint old) {
+    super.didUpdateWidget(old);
+    if (widget.active && !_c.isAnimating) _c.repeat();
+    if (!widget.active && _c.isAnimating) {
+      _c.animateTo(1, duration: const Duration(milliseconds: 300));
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeSemantics(
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, child) {
+          // Two quick sways, then a rest, each cycle.
+          final t = (_c.value * 1.6).clamp(0.0, 1.0);
+          final sway = math.sin(t * 2 * math.pi * 2) * (1 - t);
+          return Transform.translate(
+            offset: Offset(sway * 5, 0),
+            child: Transform.rotate(angle: sway * 0.18, child: child),
+          );
+        },
+        child: Icon(
+          Icons.swipe_rounded,
+          size: 18,
+          color: widget.active ? TC.textSoft : TC.muted,
         ),
       ),
     );

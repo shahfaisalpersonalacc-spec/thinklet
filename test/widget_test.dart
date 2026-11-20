@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:thinklet/diff.dart';
 import 'package:thinklet/main.dart';
+import 'package:thinklet/widgets/common.dart';
 
 void main() {
   setUpAll(() => GoogleFonts.config.allowRuntimeFetching = false);
@@ -179,6 +180,21 @@ void main() {
     await settle();
     expect(find.text('Copy translation'), findsOneWidget);
 
+    // Seen again, the translation is shown whole at once (typed out only
+    // the first time).
+    await tester.tap(find.text('Your text'));
+    await settle();
+    await tester.tap(find.text('Translation'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(
+      find.descendant(
+        of: find.byType(Typewriter),
+        matching: find.text('OUTPUT-TR'),
+      ),
+      findsOneWidget,
+    );
+    await settle();
+
     // Back to Correct: its result is still there (no new request needed).
     await tester.tap(find.text('Correct').first);
     await settle();
@@ -197,6 +213,77 @@ void main() {
     await settle();
     expect(find.text('Copy translation'), findsNothing);
     expect(find.text('Translation'), findsNothing); // no switch without result
+  });
+
+  testWidgets('phone: swipe between the text and the result', (tester) async {
+    final fake = MockClient(
+      (req) async => http.Response(
+        jsonEncode({
+          'stop_reason': 'end_turn',
+          'content': [
+            {'type': 'text', 'text': 'I have an apple.'},
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      ),
+    );
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 800);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomePage(
+          claude: ClaudeService(apiKey: 'test', client: fake),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    Future<void> settle() async {
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    await tester.enterText(find.byType(TextField), 'i has a apple');
+    await settle();
+    // No result yet: nothing to swipe to, no indicator.
+    expect(find.byIcon(Icons.swipe_rounded), findsNothing);
+
+    await tester.tap(find.text('Correct').last);
+    await settle();
+    expect(find.text('Apply to text'), findsOneWidget);
+    expect(find.byIcon(Icons.swipe_rounded), findsOneWidget); // the hint
+
+    // Swipe right on the result: back to the text box.
+    await tester.drag(find.text('Apply to text'), const Offset(260, 0));
+    await settle();
+    expect(find.byType(TextField), findsOneWidget);
+    expect(find.text('Apply to text'), findsNothing);
+
+    // A short drag snaps back to where it was.
+    await tester.drag(find.text('YOUR LINE'), const Offset(-60, 0));
+    await settle();
+    expect(find.byType(TextField), findsOneWidget);
+
+    // Swipe left starting on the text itself (a real finger: small steps),
+    // so text selection doesn't take the gesture: on to the result.
+    final g = await tester.startGesture(
+      tester.getCenter(find.byType(TextField)),
+    );
+    for (var i = 0; i < 40; i++) {
+      await g.moveBy(const Offset(-5, 0));
+      await tester.pump(const Duration(milliseconds: 8));
+    }
+    await g.up();
+    await settle();
+    expect(find.text('Apply to text'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+
+    // A vertical drag on the card still scrolls instead of swiping.
+    await tester.drag(find.text('Apply to text'), const Offset(0, -80));
+    await settle();
+    expect(find.text('Apply to text'), findsOneWidget);
   });
 
   testWidgets('English target: a word gets a dictionary definition', (

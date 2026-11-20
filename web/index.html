@@ -31,10 +31,61 @@
   <link rel="icon" type="image/png" sizes="64x64" href="favicon.png"/>
   <link rel="icon" href="favicon.ico" sizes="any"/>
 
-  <title>Thinklet</title><style>body{background:#0E1116}</style>
+  <title>Thinklet</title>
   <link rel="manifest" href="manifest.json">
+  <style>
+    body { margin: 0; background: #0E1116; }
+    /* Splash shown while Flutter loads; removed on its first frame. */
+    #splash {
+      position: fixed; inset: 0; z-index: 10;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #0E1116;
+      transition: opacity .45s ease, transform .45s ease;
+    }
+    #splash.gone { opacity: 0; transform: scale(1.04); pointer-events: none; }
+    /* The App icon design, full size: the icon's own background matches the
+       page, so it reads as one big mark. */
+    #splash svg { display: block; width: min(92vw, 78vh, 680px); height: auto; }
+    /* Animation copied from the design's App icon artboard. */
+    @keyframes iconrise { from { opacity: 0; transform: translateY(40px) scale(.92); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    @keyframes icondot { 0% { opacity: 0; transform: scale(0); } 70% { opacity: 1; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+    @keyframes icondraw { from { stroke-dashoffset: 440; } to { stroke-dashoffset: 0; } }
+    @media (prefers-reduced-motion: reduce) { #splash * { animation-duration: .01ms !important; } }
+  </style>
 </head>
 <body>
+  <div id="splash" role="img" aria-label="Thinklet is loading">
+    <svg viewBox="0 0 1024 1024" aria-hidden="true">
+      <circle cx="512" cy="467" r="430" fill="none" stroke="#1C222B" stroke-width="2"/>
+      <circle cx="512" cy="467" r="350" fill="none" stroke="#1C222B" stroke-width="2" stroke-dasharray="6 14"/>
+      <g style="transform-origin: 512px 467px; animation: iconrise .8s cubic-bezier(.2,.9,.25,1) both">
+        <rect x="212" y="232" width="600" height="470" rx="150" fill="#C6F24E"/>
+        <path d="M372 474l100 100 190-214" fill="none" stroke="#0E1116" stroke-width="64"
+              stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="440"
+              style="animation: icondraw .7s ease-out .55s both"/>
+      </g>
+      <circle cx="296" cy="792" r="48" fill="#C6F24E"
+              style="transform-origin: 296px 792px; animation: icondot .5s cubic-bezier(.2,.9,.3,1.3) .5s both"/>
+      <circle cx="208" cy="866" r="26" fill="#B9A6FF"
+              style="transform-origin: 208px 866px; animation: icondot .5s cubic-bezier(.2,.9,.3,1.3) .7s both"/>
+    </svg>
+  </div>
+  <script>
+    // Fade the splash out once Flutter has drawn its first frame, but not
+    // before the icon animation (about 1.25 s) has played to the end.
+    (function () {
+      var start = Date.now();
+      window.addEventListener('flutter-first-frame', function () {
+        var wait = Math.max(0, 1500 - (Date.now() - start));
+        setTimeout(function () {
+          var s = document.getElementById('splash');
+          if (!s) return;
+          s.classList.add('gone');
+          setTimeout(function () { s.remove(); }, 500);
+        }, wait);
+      });
+    })();
+  </script>
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader
