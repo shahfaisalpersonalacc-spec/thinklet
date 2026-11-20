@@ -60,6 +60,7 @@ class _AuthGateState extends State<_AuthGate> {
   bool _checking = true;
   bool _signedIn = false;
   String _draft = ''; // typed text kept across a sign-in expiry
+  AppTab _tab = AppTab.write; // reopened where the user left off
 
   @override
   void initState() {
@@ -69,16 +70,17 @@ class _AuthGateState extends State<_AuthGate> {
       _checking = false;
       return;
     }
-    if (api.token != null) {
-      _checking = false;
-      _signedIn = true;
-      return;
-    }
-    Session.load().then((token) {
+    // Sign-in and last tab load together, so the app opens on the right
+    // tab with no flash of the other one.
+    Future.wait([
+      api.token != null ? Future.value(api.token) : Session.load(),
+      Session.loadTab(),
+    ]).then((r) {
       if (!mounted) return;
       setState(() {
-        api.token = token;
-        _signedIn = token != null;
+        api.token = r[0];
+        _signedIn = r[0] != null;
+        _tab = r[1] == AppTab.notes.name ? AppTab.notes : AppTab.write;
         _checking = false;
       });
     });
@@ -110,6 +112,11 @@ class _AuthGateState extends State<_AuthGate> {
               key: const ValueKey('home'),
               api: api,
               initialText: _draft,
+              initialTab: _tab,
+              onTabChanged: (t) {
+                _tab = t;
+                Session.saveTab(t.name);
+              },
               onSignOut: _signOut,
             )
           : LoginPage(

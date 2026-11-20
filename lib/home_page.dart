@@ -73,6 +73,8 @@ class HomePage extends StatefulWidget {
     this.claude,
     this.api,
     this.initialText = '',
+    this.initialTab = AppTab.write,
+    this.onTabChanged,
     this.onSignOut,
   });
 
@@ -82,6 +84,11 @@ class HomePage extends StatefulWidget {
   /// The backend. Null: no login, history kept in memory, no Notes tab.
   final ApiClient? api;
   final String initialText;
+
+  /// Tab to open on (the one the user last left), and a callback to
+  /// remember changes.
+  final AppTab initialTab;
+  final ValueChanged<AppTab>? onTabChanged;
 
   /// Signs out (button, or the backend rejected the sign-in). Gets the
   /// typed text so it survives signing back in.
@@ -111,7 +118,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       widget.claude == null && widget.api == null && _apiKey.isEmpty;
   String _lastText = '';
 
-  AppTab _tab = AppTab.write;
+  // Notes needs the backend; without one, always Write.
+  late AppTab _tab = widget.api == null ? AppTab.write : widget.initialTab;
   final _notesKey = GlobalKey<NotesPageState>();
   // "Save to notes": result fingerprint -> saved (true) or saving (false).
   final _savedNotes = <String, bool>{};
@@ -923,6 +931,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _tab = t;
       _toneOpen = false;
     });
+    widget.onTabChanged?.call(t);
   }
 
   /// Write | Notes switch in the header. [compact] (phone): icons only, so

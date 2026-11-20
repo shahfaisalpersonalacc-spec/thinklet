@@ -302,6 +302,38 @@ void main() {
     expect(find.text('keep this text'), findsOneWidget);
   });
 
+  testWidgets('reload reopens the tab you left (Notes or Write)', (
+    tester,
+  ) async {
+    await start(tester, signedIn: true);
+    expect(find.text('YOUR LINE'), findsOneWidget); // first visit: Write
+    await tester.tap(find.bySemanticsLabel('Notes'));
+    await settle(tester);
+
+    Future<void> reload() async {
+      await tester.pumpWidget(const SizedBox()); // the page goes away…
+      await tester.pumpWidget(
+        ThinkletApp(
+          api: ApiClient(
+            base: 'https://thinklet.test/api',
+            client: server.client,
+            token: 'tok', // still signed in
+          ),
+        ),
+      ); // …and loads again, with the same saved sign-in and settings
+      await settle(tester);
+    }
+
+    await reload();
+    expect(find.text('New note'), findsOneWidget);
+    expect(find.text('YOUR LINE'), findsNothing);
+
+    await tester.tap(find.bySemanticsLabel('Write'));
+    await settle(tester);
+    await reload();
+    expect(find.text('YOUR LINE'), findsOneWidget);
+  });
+
   testWidgets('sign out button returns to login', (tester) async {
     await start(tester, signedIn: true);
     await tester.tap(find.bySemanticsLabel('Sign out'));

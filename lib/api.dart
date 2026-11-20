@@ -224,6 +224,15 @@ class Session {
     await p.setInt(_expiresKey, expiresAt.millisecondsSinceEpoch);
   }
 
+  static const _tabKey = 'thinklet.tab';
+
+  /// The tab the app was last on ("write" / "notes"), or null.
+  static Future<String?> loadTab() async =>
+      (await SharedPreferences.getInstance()).getString(_tabKey);
+
+  static Future<void> saveTab(String tab) async =>
+      (await SharedPreferences.getInstance()).setString(_tabKey, tab);
+
   static Future<void> clear() async {
     final p = await SharedPreferences.getInstance();
     await p.remove(_tokenKey);
