@@ -196,8 +196,15 @@ void main() {
     expect(find.text('Apply to text'), findsOneWidget);
     expect(tester.getCenter(find.text('Your text')).dx, lessThan(400));
 
-    // Translate.
+    // Translate: English is picked by default; choose Urdu for a plain
+    // translation.
     await tester.tap(find.text('Translate').first);
+    await settle();
+    expect(
+      tester.getSemantics(find.text('English')),
+      isSemantics(isSelected: true),
+    );
+    await tester.tap(find.text('Urdu'));
     await settle();
     await tester.tap(find.text('Translate').last);
     await settle();

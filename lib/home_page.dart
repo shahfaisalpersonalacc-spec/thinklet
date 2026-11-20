@@ -125,7 +125,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final _savedNotes = <String, bool>{};
 
   Mode _mode = Mode.correct;
-  String _lang = 'Urdu';
+  String _lang = 'English';
   // Each mode keeps its own status, error and request counter, so switching
   // Correct <-> Translate never discards the other mode's result.
   final _phases = {Mode.correct: Phase.idle, Mode.translate: Phase.idle};
