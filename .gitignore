@@ -50,3 +50,4 @@ app.*.map.json
 # Vercel deploy: copied web build and local project link
 /vercel/public/
 /vercel/.vercel/
+/.flutter-sdk/
