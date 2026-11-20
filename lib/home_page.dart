@@ -643,7 +643,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  /// Below this height the page can't fit, so it scrolls instead.
+  static const _fitMinHeight = 600.0;
+
   Widget _webLayout(BoxConstraints c) {
+    // Fit the window: the text box takes whatever height is left, so the
+    // action button is always on screen without scrolling.
+    final fit = c.maxHeight >= _fitMinHeight;
     return Stack(
       children: [
         const Positioned(
@@ -658,61 +664,78 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         ),
         ExcludeFocus(
           excluding: _histOpen,
-          child: SingleChildScrollView(
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 1120),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 20, 24, 56),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Rise(child: _webHeader()),
-                      const SizedBox(height: 44),
-                      Rise(
-                        delay: const Duration(milliseconds: 80),
-                        child: _headline(web: true),
-                      ),
-                      const SizedBox(height: 32),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: Rise(
-                              delay: const Duration(milliseconds: 160),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  _modeBlock(),
-                                  const SizedBox(height: 16),
-                                  _inputCard(web: true),
-                                  const SizedBox(height: 16),
-                                  _actionRow(web: true),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 24),
-                          Expanded(
-                            child: Rise(
-                              delay: const Duration(milliseconds: 240),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: _results(web: true, gap: 16),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
+          child: fit
+              ? _webPage(c, fit: true)
+              : SingleChildScrollView(child: _webPage(c, fit: false)),
         ),
         ..._webHistory(c),
       ],
+    );
+  }
+
+  /// Wide page. [fit]: fills the window height exactly (text box stretches,
+  /// results scroll in their own column); otherwise natural height.
+  Widget _webPage(BoxConstraints c, {required bool fit}) {
+    final compact = c.maxHeight < 760; // short window: tighter spacing
+    final left = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _modeBlock(),
+        const SizedBox(height: 16),
+        if (fit)
+          Expanded(child: _inputCard(web: true, fill: true))
+        else
+          _inputCard(web: true),
+        const SizedBox(height: 16),
+        _actionRow(web: true),
+      ],
+    );
+    final right = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: _results(web: true, gap: 16),
+    );
+    final columns = Row(
+      crossAxisAlignment: fit
+          ? CrossAxisAlignment.stretch
+          : CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Rise(delay: const Duration(milliseconds: 160), child: left),
+        ),
+        const SizedBox(width: 24),
+        Expanded(
+          child: Rise(
+            delay: const Duration(milliseconds: 240),
+            child: fit
+                ? SingleChildScrollView(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: right,
+                  )
+                : right,
+          ),
+        ),
+      ],
+    );
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1120),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(24, 20, 24, fit ? 24 : 56),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Rise(child: _webHeader()),
+              SizedBox(height: compact ? 20 : 44),
+              Rise(
+                delay: const Duration(milliseconds: 80),
+                child: _headline(web: true, compact: compact),
+              ),
+              SizedBox(height: compact ? 20 : 32),
+              if (fit) Expanded(child: columns) else columns,
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -803,7 +826,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ],
   );
 
-  Widget _headline({required bool web}) => Semantics(
+  Widget _headline({required bool web, bool compact = false}) => Semantics(
     header: true,
     child: Text.rich(
       TextSpan(
@@ -816,7 +839,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         ],
       ),
       style: grotesk(
-        size: web ? 44 : 28,
+        size: web ? (compact ? 34 : 44) : 28,
         height: web ? 1.1 : 1.15,
         spacing: web ? -1 : -0.6,
       ),
@@ -942,7 +965,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _inputCard({required bool web}) {
+  /// [fill]: the box takes all the height it is given (wide layout fitted
+  /// to the window) instead of a fixed text area height.
+  Widget _inputCard({required bool web, bool fill = false}) {
     final checking = _phase == Phase.checking;
     final pad = web ? 18.0 : 14.0;
     return AnimatedContainer(
@@ -962,7 +987,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               children: [
                 Text('YOUR LINE', style: capsLabel()),
                 SizedBox(height: web ? 10 : 8),
-                SizedBox(
+                _flexOrFixed(
+                  fill: fill,
                   height: web ? 220 : 132,
                   child: CallbackShortcuts(
                     bindings: {
@@ -1058,6 +1084,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ),
     );
   }
+
+  static Widget _flexOrFixed({
+    required bool fill,
+    required double height,
+    required Widget child,
+  }) => fill ? Expanded(child: child) : SizedBox(height: height, child: child);
 
   Widget _actionRow({required bool web}) {
     final checking = _phase == Phase.checking;

@@ -87,6 +87,32 @@ void main() {
     expect(button.top - clear.bottom, greaterThanOrEqualTo(24));
   });
 
+  testWidgets('wide window: the action button fits without scrolling', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    // Short and tall desktop windows, in both modes (Translate adds the
+    // language chips above the text box).
+    for (final size in const [Size(1280, 640), Size(1280, 1000)]) {
+      tester.view.physicalSize = size;
+      await tester.pumpWidget(const ThinkletApp());
+      await tester.pump(const Duration(seconds: 1));
+      for (final mode in ['Correct', 'Translate']) {
+        await tester.tap(find.text(mode).first);
+        await tester.pump(const Duration(seconds: 1));
+        final button = tester.getRect(find.text(mode).last);
+        expect(button.bottom, lessThanOrEqualTo(size.height), reason: '$size');
+        // The text box is still a usable height.
+        expect(
+          tester.getRect(find.byType(TextField)).height,
+          greaterThanOrEqualTo(80),
+          reason: '$size $mode',
+        );
+      }
+    }
+  });
+
   testWidgets('text survives leaving and returning to the app/tab', (
     tester,
   ) async {
