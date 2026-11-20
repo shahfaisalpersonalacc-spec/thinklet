@@ -6,23 +6,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 
+import 'api.dart';
 import 'claude_service.dart';
 import 'diff.dart';
+import 'notes/notes_page.dart';
 import 'theme.dart';
 import 'widgets/common.dart';
 
-/// Build-time key from .env: flutter run --dart-define-from-file=.env
+/// Old direct mode (no backend): key from .env at build time. With a
+/// backend (API_BASE) the key stays on the server instead.
 const _apiKey = String.fromEnvironment('ANTHROPIC_API_KEY');
-
-/// Hosted web build: --dart-define=CLAUDE_PROXY=/api/claude sends requests
-/// to our server, which holds the key (see vercel/api/claude.js).
-const _proxy = String.fromEnvironment('CLAUDE_PROXY');
 const _noKeyMessage =
     'No API key. Add ANTHROPIC_API_KEY to .env and run with '
     '--dart-define-from-file=.env';
 
-/// History button hidden for now; history is still recorded behind it.
-const _historyEnabled = false;
+enum AppTab { write, notes }
 
 enum Mode { correct, translate }
 
@@ -69,20 +67,25 @@ const tones = [
   Tone('Concise', 'as short as possible while keeping every key fact.'),
 ];
 
-class HistoryEntry {
-  HistoryEntry(this.id, this.kind, this.before, this.after, this.at);
-  final String id;
-  final String kind; // "Corrected", a tone name, or a language name
-  final String before;
-  final String after;
-  final DateTime at;
-}
-
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, this.claude});
+  const HomePage({
+    super.key,
+    this.claude,
+    this.api,
+    this.initialText = '',
+    this.onSignOut,
+  });
 
-  /// Injected in tests; the app builds its own from the .env key.
+  /// Injected in tests; otherwise built from [api] (or the .env key).
   final ClaudeService? claude;
+
+  /// The backend. Null: no login, history kept in memory, no Notes tab.
+  final ApiClient? api;
+  final String initialText;
+
+  /// Signs out (button, or the backend rejected the sign-in). Gets the
+  /// typed text so it survives signing back in.
+  final void Function(String draft)? onSignOut;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -97,11 +100,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   int _peek = 0; // bumped to make the pager peek at the text once
   late final ClaudeService _claude =
       widget.claude ??
-      (_apiKey.isEmpty && _proxy.isNotEmpty
-          ? ClaudeService.proxy(_proxy)
+      (widget.api != null
+          ? ClaudeService.proxy(
+              '${widget.api!.base}/claude',
+              client: widget.api!.httpClient,
+              token: () => widget.api!.token,
+            )
           : ClaudeService(apiKey: _apiKey));
-  bool get _noKey => widget.claude == null && _apiKey.isEmpty && _proxy.isEmpty;
+  bool get _noKey =>
+      widget.claude == null && widget.api == null && _apiKey.isEmpty;
   String _lastText = '';
+
+  AppTab _tab = AppTab.write;
+  final _notesKey = GlobalKey<NotesPageState>();
+  // "Save to notes": result fingerprint -> saved (true) or saving (false).
+  final _savedNotes = <String, bool>{};
 
   Mode _mode = Mode.correct;
   String _lang = 'Urdu';
@@ -154,7 +167,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _swipe = AnimationController.unbounded(vsync: this);
+    _input.text = widget.initialText;
+    _lastText = _input.text;
     _input.addListener(_onTextChanged);
+    _loadHistory();
     _lifecycle = AppLifecycleListener(
       onShow: _redrawText,
       onResume: _redrawText,
@@ -284,11 +300,73 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       }
     } on ClaudeException catch (e) {
       if (!current()) return;
+      if (e.authExpired) return _signOut();
       setState(() {
         _phases[mode] = Phase.idle;
         _errors[mode] = e.message;
       });
     }
+  }
+
+  /// Back to the login screen, keeping the typed text.
+  void _signOut() => widget.onSignOut?.call(_input.text);
+
+  void _toast(String text) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(text, style: inter(size: 14)),
+          backgroundColor: TC.surface,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+  }
+
+  /// "Save to notes" on a result card. The fingerprint (kind + original +
+  /// result) makes a second tap return the same note instead of a copy.
+  Future<void> _saveToNote({
+    required String title,
+    required String result,
+    required String source,
+  }) async {
+    final api = widget.api;
+    if (api == null) return;
+    final original = _input.text.trim();
+    final key = _noteKey(source, original, result);
+    if (_savedNotes.containsKey(key)) return;
+    setState(() => _savedNotes[key] = false);
+    try {
+      await api.createNote({
+        'title': title,
+        'body': '$result\n\nOriginal: $original',
+        'tags': [source],
+        'source': source,
+        'source_key': key,
+      });
+      if (!mounted) return;
+      setState(() => _savedNotes[key] = true);
+      _notesKey.currentState?.refresh();
+    } on AuthExpired {
+      _signOut();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _savedNotes.remove(key));
+      _toast(e.message);
+    }
+  }
+
+  /// Short fingerprint of what a note was saved from. Two 31-bit polynomial
+  /// hashes: every step stays far below 2^53, so web (JS numbers) and native
+  /// give the same key and dedupe works across devices.
+  static String _noteKey(String source, String original, String result) {
+    const m = 2147483647; // 2^31 - 1
+    var a = 7, b = 11;
+    for (final c in '$source\u0000$original\u0000$result'.codeUnits) {
+      a = (a * 131 + c) % m;
+      b = (b * 65599 + c) % m;
+    }
+    return '$source-${a.toRadixString(36)}${b.toRadixString(36)}';
   }
 
   void _clear() {
@@ -327,6 +405,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       final out = await _claude.rewrite(text, tone, guide);
       if (mounted) setState(() => _toneCache[key] = out);
     } on ClaudeException catch (e) {
+      if (e.authExpired) return _signOut();
       if (mounted) setState(() => _toneErrors[key] = e.message);
     } finally {
       if (mounted) setState(() => _toneLoading.remove(key));
@@ -355,21 +434,75 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     });
   }
 
+  /// With a backend, history lives on the server; this list mirrors it.
+  Future<void> _loadHistory() async {
+    final api = widget.api;
+    if (api == null) return;
+    try {
+      final list = await api.history();
+      if (!mounted) return;
+      setState(() {
+        _history
+          ..clear()
+          ..addAll(list);
+      });
+    } on AuthExpired {
+      _signOut();
+    } on ApiException {
+      // History is a convenience: the app works without it loading.
+    }
+  }
+
   void _addHistory(String kind, String before, String after) {
     if (_history.isNotEmpty &&
         _history.first.kind == kind &&
         _history.first.after == after) {
       return;
     }
-    setState(
-      () => _history.insert(
-        0,
-        HistoryEntry('h${++_seq}', kind, before, after, DateTime.now()),
-      ),
+    final local = HistoryEntry(
+      'h${++_seq}',
+      kind,
+      before,
+      after,
+      DateTime.now(),
     );
+    setState(() => _history.insert(0, local));
+    final api = widget.api;
+    if (api == null) return;
+    // Save on the server; swap in the server's entry (its id deletes it).
+    api
+        .addHistory(kind, before, after)
+        .then(
+          (saved) {
+            if (!mounted) return;
+            final i = _history.indexOf(local);
+            if (i >= 0) setState(() => _history[i] = saved);
+          },
+          onError: (Object e) {
+            if (e is AuthExpired) _signOut();
+          },
+        );
   }
 
   void _removeHistory(List<String> ids) {
+    final api = widget.api;
+    if (api != null) {
+      final all = ids.length == _history.length && ids.length > 1;
+      final Future<void> done = all
+          ? api.clearHistory()
+          : Future.wait([
+              for (final id in ids)
+                if (!id.startsWith('h')) api.deleteHistory(id),
+            ]);
+      done.catchError((Object e) {
+        if (e is AuthExpired) {
+          _signOut();
+        } else if (mounted) {
+          _toast('Could not delete from history. Try again.');
+          _loadHistory();
+        }
+      });
+    }
     setState(() => _removing.addAll(ids));
     Timer(const Duration(milliseconds: 360), () {
       if (!mounted) return;
@@ -424,43 +557,59 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           right: -60,
           child: DriftCircle(size: 220, dashed: true),
         ),
-        const Positioned(
-          top: -20,
-          right: -10,
-          child: DriftCircle(size: 120),
-        ),
+        const Positioned(top: -20, right: -10, child: DriftCircle(size: 120)),
         SafeArea(
           child: ExcludeFocus(
             excluding: _histOpen || _toneOpen,
             child: Column(
               children: [
-                Expanded(
-                  child: Stack(
-                    children: [
-                      Positioned.fill(child: _mobileScroll()),
-                      Positioned(
-                        left: 20,
-                        right: 20,
-                        bottom: 8,
-                        child: _swipeBar(),
-                      ),
-                    ],
+                if (_tab == AppTab.write) ...[
+                  Expanded(
+                    child: Stack(
+                      children: [
+                        Positioned.fill(child: _mobileScroll()),
+                        Positioned(
+                          left: 20,
+                          right: 20,
+                          bottom: 8,
+                          child: _swipeBar(),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                // Pinned: always on screen, and right above the keyboard
-                // when it is open.
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 6, 20, 12),
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 520),
-                      child: Rise(
-                        delay: const Duration(milliseconds: 240),
-                        child: _actionRow(web: false),
+                  // Pinned: always on screen, and right above the keyboard
+                  // when it is open.
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 6, 20, 12),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 520),
+                        child: Rise(
+                          delay: const Duration(milliseconds: 240),
+                          child: _actionRow(web: false),
+                        ),
                       ),
                     ),
                   ),
-                ),
+                ] else
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
+                      child: Center(
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 520),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _mobileHeader(),
+                              const SizedBox(height: 16),
+                              Expanded(child: _notesPage(wide: false)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -662,14 +811,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           right: -80,
           child: DriftCircle(size: 340, dashed: true),
         ),
-        const Positioned(
-          top: -30,
-          right: 10,
-          child: DriftCircle(size: 180),
-        ),
+        const Positioned(top: -30, right: 10, child: DriftCircle(size: 180)),
         ExcludeFocus(
           excluding: _histOpen,
-          child: fit
+          child: _tab == AppTab.notes
+              ? _webNotes()
+              : fit
               ? _webPage(c, fit: true)
               : SingleChildScrollView(child: _webPage(c, fit: false)),
         ),
@@ -744,6 +891,100 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  /// Wide Notes tab: header, then the list and editor side by side.
+  Widget _webNotes() => Center(
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 1120),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _webHeader(),
+            const SizedBox(height: 24),
+            Expanded(child: _notesPage(wide: true)),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Widget _notesPage({required bool wide}) => NotesPage(
+    key: _notesKey,
+    api: widget.api!,
+    wide: wide,
+    onAuthExpired: _signOut,
+  );
+
+  void _setTab(AppTab t) {
+    if (_tab == t) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _tab = t;
+      _toneOpen = false;
+    });
+  }
+
+  /// Write | Notes switch in the header. [compact] (phone): icons only, so
+  /// it fits beside History and Sign out.
+  Widget _tabSwitch({bool compact = false}) {
+    Widget seg(AppTab t, String label, IconData icon) {
+      final on = _tab == t;
+      final color = on ? TC.bg : TC.textSoft;
+      return Semantics(
+        selected: on,
+        child: Tooltip(
+          message: label,
+          child: Pressable(
+            onTap: () => _setTab(t),
+            label: label,
+            radius: 18,
+            lift: false,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              height: 36,
+              width: compact ? 40 : null,
+              padding: compact
+                  ? EdgeInsets.zero
+                  : const EdgeInsets.symmetric(horizontal: 16),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: on ? TC.accent : Colors.transparent,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: compact
+                  ? Icon(icon, size: 20, color: color)
+                  : Text(
+                      label,
+                      style: inter(
+                        size: 14,
+                        weight: FontWeight.w600,
+                        color: color,
+                      ),
+                    ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: TC.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: TC.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          seg(AppTab.write, 'Write', Icons.edit_note_rounded),
+          seg(AppTab.notes, 'Notes', Icons.sticky_note_2_outlined),
+        ],
+      ),
+    );
+  }
+
   // ---------------------------------------------------------------- pieces
 
   Widget _brand(double logo, double size) => Row(
@@ -778,56 +1019,86 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ),
   );
 
+  Widget _signOutButton() => RoundIconButton(
+    icon: Icons.logout_rounded,
+    label: 'Sign out',
+    onTap: _signOut,
+  );
+
   Widget _mobileHeader() => Row(
     mainAxisAlignment: MainAxisAlignment.spaceBetween,
     children: [
-      _brand(38, 20),
-      if (_historyEnabled)
-        Stack(
-          clipBehavior: Clip.none,
-          children: [
-            RoundIconButton(
-              icon: Icons.history_rounded,
-              label: 'Open history',
-              onTap: () => setState(() => _histOpen = true),
-            ),
-            if (_history.isNotEmpty)
-              Positioned(top: -4, right: -4, child: _countBadge()),
-          ],
+      // Shrinks on very narrow phones instead of pushing the buttons off.
+      Flexible(
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: _brand(38, 20),
         ),
+      ),
+      const SizedBox(width: 8),
+      Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (widget.api != null) ...[
+            _tabSwitch(compact: true),
+            const SizedBox(width: 8),
+          ],
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              RoundIconButton(
+                icon: Icons.history_rounded,
+                label: 'Open history',
+                onTap: () => setState(() => _histOpen = true),
+              ),
+              if (_history.isNotEmpty)
+                Positioned(top: -4, right: -4, child: _countBadge()),
+            ],
+          ),
+          if (widget.onSignOut != null) ...[
+            const SizedBox(width: 8),
+            _signOutButton(),
+          ],
+        ],
+      ),
     ],
   );
 
   Widget _webHeader() => Row(
-    mainAxisAlignment: MainAxisAlignment.spaceBetween,
     children: [
       _brand(40, 22),
-      if (_historyEnabled)
-        Pressable(
-          onTap: () => setState(() => _histOpen = true),
-          radius: 22,
-          child: Container(
-            height: 44,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            decoration: BoxDecoration(
-              color: TC.surface,
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(color: TC.borderStrong),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.history_rounded, size: 18, color: TC.text),
+      if (widget.api != null) ...[const SizedBox(width: 24), _tabSwitch()],
+      const Spacer(),
+      if (widget.onSignOut != null) ...[
+        _signOutButton(),
+        const SizedBox(width: 10),
+      ],
+      Pressable(
+        onTap: () => setState(() => _histOpen = true),
+        radius: 22,
+        child: Container(
+          height: 44,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: TC.surface,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: TC.borderStrong),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.history_rounded, size: 18, color: TC.text),
+              const SizedBox(width: 8),
+              Text('History', style: inter(weight: FontWeight.w500)),
+              if (_history.isNotEmpty) ...[
                 const SizedBox(width: 8),
-                Text('History', style: inter(weight: FontWeight.w500)),
-                if (_history.isNotEmpty) ...[
-                  const SizedBox(width: 8),
-                  _countBadge(),
-                ],
+                _countBadge(),
               ],
-            ),
+            ],
           ),
         ),
+      ),
     ],
   );
 
@@ -1403,6 +1674,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       ? 'Looks good'
                       : (_fixes == 1 ? '1 fix' : '$_fixes fixes'),
                 ),
+                ..._saveButton(
+                  title: 'Correction',
+                  result: _corrected,
+                  source: 'correct',
+                ),
               ],
             ),
             SizedBox(height: web ? 14 : 12),
@@ -1438,6 +1714,60 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  /// "Save to notes" button for the top-right of a result card's header row
+  /// (pushed right by a Spacer). Nothing without a backend.
+  List<Widget> _saveButton({
+    required String title,
+    required String result,
+    required String source,
+  }) {
+    if (widget.api == null) return const [];
+    final key = _noteKey(source, _input.text.trim(), result);
+    final state = _savedNotes[key]; // null: not saved, false: saving
+    final saved = state == true;
+    return [
+      const Spacer(),
+      Tooltip(
+        message: saved ? 'Saved to notes' : 'Save to notes',
+        child: Pressable(
+          onTap: state == null
+              ? () => _saveToNote(title: title, result: result, source: source)
+              : null,
+          label: saved ? 'Saved to notes' : 'Save to notes',
+          radius: 12,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: saved ? TC.accent : TC.accentFaint,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: TC.accent.withValues(alpha: 0.6)),
+            ),
+            child: Center(
+              child: state == false
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: TC.accent,
+                      ),
+                    )
+                  : Icon(
+                      saved
+                          ? Icons.bookmark_added_rounded
+                          : Icons.bookmark_add_outlined,
+                      size: 18,
+                      color: saved ? TC.bg : TC.accent,
+                    ),
+            ),
+          ),
+        ),
+      ),
+    ];
+  }
+
   Widget _translationCard({required bool web}) {
     final english = _translatedLang == 'English' ? _english : null;
     if (english != null && english.isDefinition) {
@@ -1461,6 +1791,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   english?.kind == 'explanation'
                       ? 'Simple English'
                       : _translatedLang,
+                ),
+                ..._saveButton(
+                  title: english?.kind == 'explanation'
+                      ? 'Meaning'
+                      : '$_translatedLang translation',
+                  result: _translation,
+                  source: 'translate',
                 ),
               ],
             ),
@@ -1510,6 +1847,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   Text('DEFINITION', style: capsLabel()),
                   const SizedBox(width: 8),
                   const Pill('Dictionary'),
+                  ..._saveButton(
+                    title: 'Definition: ${r.word}',
+                    result: r.toPlainText(),
+                    source: 'translate',
+                  ),
                 ],
               ),
               const SizedBox(height: 12),

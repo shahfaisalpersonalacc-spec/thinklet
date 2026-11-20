@@ -1,3 +1,7 @@
 # Never upload local secrets or the CLI's link folder.
 .env*
 .vercel
+# Tests and local installs aren't needed on the server.
+test
+node_modules
+dev-server.js

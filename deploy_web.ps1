@@ -1,6 +1,7 @@
 # Builds the web app WITHOUT the API key and deploys it to Vercel.
-# The key lives only in the Vercel project (ANTHROPIC_API_KEY env var);
-# the app calls /api/claude (vercel/api/claude.js), which adds it.
+# Secrets live only in the Vercel project; the app talks to /api
+# (vercel/api: login, claude, history, notes).
+# Usually not needed: pushing to main makes Vercel build and deploy.
 #
 #   .\deploy_web.ps1          production deploy
 #   .\deploy_web.ps1 -Preview preview deploy (separate test URL)
@@ -9,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
 # Never --dart-define-from-file=.env here: that would put the key in the JS.
-flutter build web --release --dart-define=CLAUDE_PROXY=/api/claude
+flutter build web --release --dart-define=API_BASE=/api
 if ($LASTEXITCODE -ne 0) { throw 'flutter build web failed' }
 
 $public = Join-Path $PSScriptRoot 'vercel\public'

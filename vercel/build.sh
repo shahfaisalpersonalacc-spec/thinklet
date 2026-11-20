@@ -21,7 +21,7 @@ flutter --version
 
 cd ..
 flutter pub get
-# No API key in the build: the app calls /api/claude, which holds it.
-flutter build web --release --dart-define=CLAUDE_PROXY=/api/claude
+# No API key in the build: the app talks to /api (login, Claude, notes).
+flutter build web --release --dart-define=API_BASE=/api
 rm -rf vercel/public
 cp -r build/web vercel/public

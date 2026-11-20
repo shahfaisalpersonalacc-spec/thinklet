@@ -66,8 +66,11 @@ class EnglishResult {
 
 /// Thrown when the Claude API call fails or returns no usable text.
 class ClaudeException implements Exception {
-  ClaudeException(this.message);
+  ClaudeException(this.message, {this.authExpired = false});
   final String message;
+
+  /// Our backend rejected the sign-in: the user must log in again.
+  final bool authExpired;
   @override
   String toString() => message;
 }
@@ -78,17 +81,21 @@ class ClaudeException implements Exception {
 class ClaudeService {
   ClaudeService({required this.apiKey, http.Client? client})
     : endpoint = _anthropic,
+      token = null,
       _client = client ?? http.Client();
 
   /// Calls through our own server (e.g. "/api/claude" on Vercel), which
   /// holds the API key, so no key ships inside the app.
-  ClaudeService.proxy(this.endpoint, {http.Client? client})
+  ClaudeService.proxy(this.endpoint, {http.Client? client, this.token})
     : apiKey = '',
       _client = client ?? http.Client();
 
   final String apiKey;
   final String endpoint;
   final http.Client _client;
+
+  /// Proxy mode: the current sign-in token, sent as a Bearer header.
+  final String? Function()? token;
 
   static const _anthropic = 'https://api.anthropic.com/v1/messages';
   static const _model = 'claude-opus-5-5';
@@ -195,6 +202,7 @@ class ClaudeService {
         Uri.base.resolve(endpoint),
         headers: {
           'content-type': 'application/json',
+          if (token?.call() case final t?) 'authorization': 'Bearer $t',
           if (apiKey.isNotEmpty) ...{
             'x-api-key': apiKey,
             'anthropic-version': '2026-10-21',
@@ -233,6 +241,9 @@ class ClaudeService {
       );
     }
 
+    if (response.statusCode == 401 && apiKey.isEmpty) {
+      throw ClaudeException('Please sign in again.', authExpired: true);
+    }
     if (response.statusCode != 200) {
       final msg = (body is Map && body['error'] is Map)
           ? body['error']['message']
