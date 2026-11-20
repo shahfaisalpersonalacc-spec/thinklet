@@ -100,8 +100,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       (_apiKey.isEmpty && _proxy.isNotEmpty
           ? ClaudeService.proxy(_proxy)
           : ClaudeService(apiKey: _apiKey));
-  bool get _noKey =>
-      widget.claude == null && _apiKey.isEmpty && _proxy.isEmpty;
+  bool get _noKey => widget.claude == null && _apiKey.isEmpty && _proxy.isEmpty;
   String _lastText = '';
 
   Mode _mode = Mode.correct;
@@ -513,8 +512,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return e.kind == 'explanation' ? 'Meaning' : 'Translation';
   }
 
-  /// Floating indicator for the swipeable cards: a waving swipe hint, the two
-  /// page names (tappable too, for mouse and screen-reader users) and dots
+  /// Floating indicator for the swipeable cards: the two page names (tappable too, for mouse and screen-reader users) and dots
   /// that stretch and recolor live as the finger drags.
   Widget _swipeBar() {
     final show = _hasResult && !_histOpen && !_toneOpen;
@@ -558,7 +556,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         );
         return Container(
           height: 44,
-          padding: const EdgeInsets.fromLTRB(12, 4, 4, 4),
+          padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             color: TC.surface,
             borderRadius: BorderRadius.circular(22),
@@ -576,7 +574,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _SwipeHint(active: !_swipedOnce),
               Flexible(
                 child: label('Your text', 'Back to your text', 1 - p, 0),
               ),
@@ -2513,67 +2510,6 @@ class _SwipeRecognizer extends HorizontalDragGestureRecognizer {
   ) {
     final dx = globalDistanceMoved.abs();
     return dx > 6 && dx > _dy.abs() * 1.3;
-  }
-}
-
-/// Swipe icon that sways side to side until the user has swiped once.
-class _SwipeHint extends StatefulWidget {
-  const _SwipeHint({required this.active});
-  final bool active;
-
-  @override
-  State<_SwipeHint> createState() => _SwipeHintState();
-}
-
-class _SwipeHintState extends State<_SwipeHint>
-    with SingleTickerProviderStateMixin {
-  late final _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1600),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.active) _c.repeat();
-  }
-
-  @override
-  void didUpdateWidget(_SwipeHint old) {
-    super.didUpdateWidget(old);
-    if (widget.active && !_c.isAnimating) _c.repeat();
-    if (!widget.active && _c.isAnimating) {
-      _c.animateTo(1, duration: const Duration(milliseconds: 300));
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ExcludeSemantics(
-      child: AnimatedBuilder(
-        animation: _c,
-        builder: (context, child) {
-          // Two quick sways, then a rest, each cycle.
-          final t = (_c.value * 1.6).clamp(0.0, 1.0);
-          final sway = math.sin(t * 2 * math.pi * 2) * (1 - t);
-          return Transform.translate(
-            offset: Offset(sway * 5, 0),
-            child: Transform.rotate(angle: sway * 0.18, child: child),
-          );
-        },
-        child: Icon(
-          Icons.swipe_rounded,
-          size: 18,
-          color: widget.active ? TC.textSoft : TC.muted,
-        ),
-      ),
-    );
   }
 }
 

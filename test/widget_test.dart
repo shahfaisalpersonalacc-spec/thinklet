@@ -274,12 +274,13 @@ void main() {
     await tester.enterText(find.byType(TextField), 'i has a apple');
     await settle();
     // No result yet: nothing to swipe to, no indicator.
-    expect(find.byIcon(Icons.swipe_rounded), findsNothing);
+    expect(find.text('Your text'), findsNothing);
 
     await tester.tap(find.text('Correct').last);
     await settle();
     expect(find.text('Apply to text'), findsOneWidget);
-    expect(find.byIcon(Icons.swipe_rounded), findsOneWidget); // the hint
+    expect(find.text('Your text'), findsOneWidget); // the indicator
+    expect(find.byIcon(Icons.swipe_rounded), findsNothing); // no hand icon
 
     // Swipe right on the result: back to the text box.
     await tester.drag(find.text('Apply to text'), const Offset(260, 0));
