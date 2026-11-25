@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import 'api.dart';
 import 'claude_service.dart';
@@ -46,6 +48,20 @@ const languages = [
 ];
 
 bool _isRtl(String name) => languages.any((l) => l.name == name && l.rtl);
+
+/// Languages you can speak into the mic, with their BCP-47 speech locale.
+const speechLanguages = {
+  'English': 'en-US',
+  'Urdu': 'ur-PK',
+  'Hindi': 'hi-IN',
+  'Arabic': 'ar-SA',
+  'Spanish': 'es-ES',
+  'French': 'fr-FR',
+  'German': 'de-DE',
+  'Chinese': 'zh-CN',
+  'Japanese': 'ja-JP',
+  'Turkish': 'tr-TR',
+};
 
 class Tone {
   const Tone(this.name, this.guide);
@@ -120,6 +136,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   // Notes needs the backend; without one, always Write.
   late AppTab _tab = widget.api == null ? AppTab.write : widget.initialTab;
+
+  // Voice input: speak, see the words appear, then Correct/Translate runs.
+  final _speech = SpeechToText();
+  bool _speechReady = false;
+  bool _listening = false;
+  bool _voiceRan = false; // this recording has already been sent
+  String _speakIn = 'English';
   final _notesKey = GlobalKey<NotesPageState>();
   // "Save to notes": result fingerprint -> saved (true) or saving (false).
   final _savedNotes = <String, bool>{};
@@ -198,6 +221,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       t.cancel();
     }
     _lifecycle.dispose();
+    if (_listening || _speech.isListening) _speech.cancel();
     _swipe.dispose();
     _input.dispose();
     super.dispose();
@@ -383,6 +407,120 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       b = (b * 65599 + c) % m;
     }
     return '$source-${a.toRadixString(36)}${b.toRadixString(36)}';
+  }
+
+  // ------------------------------------------------------------------ voice
+
+  /// Mic button: start listening, or stop (which sends what was heard).
+  Future<void> _toggleVoice() async {
+    if (_listening) {
+      await _speech.stop(); // the final result / "done" status sends it
+      return;
+    }
+    if (_insecurePage) {
+      // Chrome never even asks for the mic here, so explain instead.
+      _voiceFailed('insecure');
+      return;
+    }
+    if (!_speechReady) {
+      try {
+        _speechReady = await _speech.initialize(
+          onStatus: _onSpeechStatus,
+          onError: (e) => _voiceFailed(e.errorMsg),
+        );
+      } catch (_) {
+        _speechReady = false;
+      }
+      if (!_speechReady) {
+        _voiceFailed('unavailable');
+        return;
+      }
+    }
+    if (!mounted) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _listening = true;
+      _voiceRan = false;
+      _errors[_mode] = null;
+    });
+    try {
+      await _speech.listen(
+        onResult: (r) {
+          if (!mounted) return;
+          _input.value = TextEditingValue(
+            text: r.recognizedWords,
+            selection: TextSelection.collapsed(
+              offset: r.recognizedWords.length,
+            ),
+          );
+          if (r.finalResult) _sendVoice();
+        },
+        listenOptions: SpeechListenOptions(
+          localeId: speechLanguages[_speakIn],
+          partialResults: true,
+          cancelOnError: true,
+          listenMode: ListenMode.dictation,
+          pauseFor: const Duration(seconds: 3),
+          listenFor: const Duration(seconds: 60),
+        ),
+      );
+    } catch (_) {
+      _voiceFailed('unavailable');
+    }
+  }
+
+  void _onSpeechStatus(String status) {
+    // Some platforms end with a status but no final result: send anyway.
+    if (status == 'done' || status == 'notListening') _sendVoice();
+  }
+
+  /// Recording finished: run Correct or Translate on what was heard (once).
+  void _sendVoice() {
+    if (!mounted) return;
+    final wasListening = _listening;
+    setState(() => _listening = false);
+    if (!wasListening || _voiceRan) return;
+    _voiceRan = true;
+    // End the recording session (and its timers) on every platform.
+    if (_speech.isListening) _speech.stop();
+    if (_input.text.trim().isNotEmpty) _run();
+  }
+
+  /// Web page on plain http (e.g. a LAN address): browsers block the mic.
+  static bool get _insecurePage {
+    if (!kIsWeb || Uri.base.scheme != 'http') return false;
+    final h = Uri.base.host;
+    return h != 'localhost' && h != '127.0.0.1' && h != '[::1]';
+  }
+
+  void _voiceFailed(String code) {
+    if (!mounted) return;
+    final c = code.toLowerCase();
+    final message = c.contains('no_match') || c.contains('no-speech')
+        ? "Didn't catch that. Tap the mic and try again."
+        : c.contains('not-allowed') || c.contains('permission')
+        ? (kIsWeb
+              ? 'Microphone is blocked. Click the icon left of the address '
+                    'bar, set Microphone to Allow, then reload.'
+              : 'Microphone is blocked. Allow it for Thinklet in your '
+                    'device settings and try again.')
+        : c.contains('network')
+        ? 'Voice needs an internet connection.'
+        : c.contains('language')
+        ? '$_speakIn speech isn\'t supported here. Try another language.'
+        : c == 'insecure'
+        ?'Browsers only allow the mic on https or localhost pages. '
+              'Open http://localhost:${Uri.base.port} on this PC, or the '
+              'https website.'
+        : c == 'unavailable'
+        ? "Voice input isn't available here. Use Chrome or Edge, or "
+              'the app on a device with a microphone.'
+        : 'Voice input stopped ($code). Try again.';
+    setState(() {
+      _listening = false;
+      _voiceRan = true;
+      _errors[_mode] = message;
+    });
   }
 
   void _clear() {
@@ -1300,11 +1438,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           IgnorePointer(
                             child: ExcludeSemantics(
                               child: Text(
-                                'Type or paste your sentence here…',
+                                _listening
+                                    ? 'Listening… speak in $_speakIn'
+                                    : 'Type, paste, or tap the mic to speak…',
                                 style: inter(
                                   size: web ? 17 : 16,
                                   height: web ? 1.6 : 1.5,
-                                  color: TC.placeholder,
+                                  color: _listening
+                                      ? TC.accent
+                                      : TC.placeholder,
                                 ),
                               ),
                             ),
@@ -1344,12 +1486,19 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ),
                 ),
                 Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      '${_input.text.length} characters',
-                      style: inter(size: web ? 13 : 12, color: TC.muted),
+                    Expanded(
+                      child: Text(
+                        '${_input.text.length} characters',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: inter(size: web ? 13 : 12, color: TC.muted),
+                      ),
                     ),
+                    _speakInMenu(),
+                    const SizedBox(width: 4),
+                    _micButton(),
+                    const SizedBox(width: 4),
                     Pressable(
                       onTap: _clear,
                       radius: 8,
@@ -1383,6 +1532,91 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     required double height,
     required Widget child,
   }) => fill ? Expanded(child: child) : SizedBox(height: height, child: child);
+
+  /// Mic: tap to talk, tap again to stop. Pulses lime while listening.
+  Widget _micButton() => Tooltip(
+    message: _listening ? 'Stop and send' : 'Speak instead of typing',
+    child: Semantics(
+      button: true,
+      toggled: _listening,
+      label: _listening ? 'Stop listening' : 'Speak',
+      child: GestureDetector(
+        onTap: _toggleVoice,
+        child: _listening
+            ? const _MicPulse()
+            : Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: TC.accentFaint,
+                  border: Border.all(color: TC.accent.withValues(alpha: 0.6)),
+                ),
+                child: const Icon(
+                  Icons.mic_none_rounded,
+                  size: 20,
+                  color: TC.accent,
+                ),
+              ),
+      ),
+    ),
+  );
+
+  /// Which language you'll speak (short code, opens a list).
+  Widget _speakInMenu() => PopupMenuButton<String>(
+    tooltip: 'Language you speak',
+    initialValue: _speakIn,
+    enabled: !_listening,
+    color: TC.surface,
+    position: PopupMenuPosition.under,
+    constraints: const BoxConstraints(minWidth: 180),
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(16),
+      side: const BorderSide(color: TC.borderStrong),
+    ),
+    onSelected: (l) => setState(() => _speakIn = l),
+    itemBuilder: (_) => [
+      PopupMenuItem<String>(
+        enabled: false,
+        height: 30,
+        child: Text('I WILL SPEAK IN', style: capsLabel()),
+      ),
+      for (final l in speechLanguages.keys)
+        PopupMenuItem<String>(
+          value: l,
+          height: 40,
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  l,
+                  style: inter(
+                    size: 14,
+                    weight: l == _speakIn ? FontWeight.w600 : FontWeight.w500,
+                    color: l == _speakIn ? TC.accent : TC.text,
+                  ),
+                ),
+              ),
+              if (l == _speakIn)
+                const Icon(Icons.check_rounded, size: 18, color: TC.accent),
+            ],
+          ),
+        ),
+    ],
+    child: Container(
+      height: 32,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: TC.borderStrong),
+      ),
+      child: Text(
+        speechLanguages[_speakIn]!.split('-').first.toUpperCase(),
+        style: inter(size: 12, weight: FontWeight.w600, color: TC.textSoft),
+      ),
+    ),
+  );
 
   Widget _actionRow({required bool web}) {
     final checking = _phase == Phase.checking;
@@ -2607,6 +2841,62 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ),
     ),
   ];
+}
+
+/// Mic while listening: lime circle with a ring that keeps pulsing out.
+class _MicPulse extends StatefulWidget {
+  const _MicPulse();
+
+  @override
+  State<_MicPulse> createState() => _MicPulseState();
+}
+
+class _MicPulseState extends State<_MicPulse>
+    with SingleTickerProviderStateMixin {
+  late final _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 40,
+    height: 40,
+    child: AnimatedBuilder(
+      animation: _c,
+      builder: (context, child) => Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          Positioned.fill(
+            child: Transform.scale(
+              scale: 1 + 0.6 * _c.value,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: TC.accent.withValues(alpha: 0.35 * (1 - _c.value)),
+                ),
+              ),
+            ),
+          ),
+          Positioned.fill(child: child!),
+        ],
+      ),
+      child: Container(
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          color: TC.accent,
+        ),
+        child: const Icon(Icons.stop_rounded, size: 20, color: TC.bg),
+      ),
+    ),
+  );
 }
 
 /// One horizontally scrollable row of language chips. Works with touch,
