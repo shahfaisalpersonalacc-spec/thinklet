@@ -428,6 +428,69 @@ void main() {
     expect(find.text('Copy definition'), findsNothing);
   });
 
+  testWidgets('Correct also offers a better way to say it', (tester) async {
+    Map<String, dynamic>? sent;
+    final fake = MockClient((req) async {
+      sent = jsonDecode(req.body) as Map<String, dynamic>;
+      return http.Response(
+        jsonEncode({
+          'stop_reason': 'end_turn',
+          'content': [
+            {
+              'type': 'text',
+              'text': jsonEncode({
+                'corrected': 'This is not the good way to do this.',
+                'suggestion': "This isn't the right way to do it.",
+              }),
+            },
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 900);
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: HomePage(
+          claude: ClaudeService(apiKey: 'test', client: fake),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(seconds: 1));
+    Future<void> settle() async {
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    await tester.enterText(
+      find.byType(TextField),
+      'this is not the good way to do this',
+    );
+    await settle();
+    await tester.tap(find.text('Correct').last);
+    await settle();
+
+    // Asked for both, as structured output.
+    final format = (sent!['output_config'] as Map)['format'] as Map;
+    expect(format['type'], 'json_schema');
+
+    expect(find.text('BETTER WAY TO SAY IT'), findsOneWidget);
+    expect(find.text("This isn't the right way to do it."), findsOneWidget);
+
+    // "Use this" puts the better version in the text box (and shows it).
+    await tester.tap(find.text('Use this'));
+    await settle();
+    expect(find.byType(TextField), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      "This isn't the right way to do it.",
+    );
+  });
+
   test('proxy mode calls our server and sends no API key', () async {
     late http.Request sent;
     final fake = MockClient((req) async {
@@ -446,7 +509,7 @@ void main() {
       'https://thinklet.example/api/claude',
       client: fake,
     ).correct('fixd');
-    expect(out, 'Fixed.');
+    expect(out.corrected, 'Fixed.');
     expect(sent.url.toString(), 'https://thinklet.example/api/claude');
     expect(sent.headers.containsKey('x-api-key'), isFalse);
   });

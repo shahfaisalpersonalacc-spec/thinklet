@@ -141,6 +141,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool get _onResult => _hasResult && _showResult[_mode]!;
 
   String _corrected = '';
+  String _suggestion = ''; // "a better way to say it", or ''
   List<Seg> _segs = const [];
   int _fixes = 0;
   String _translation = '';
@@ -254,11 +255,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     bool current() => mounted && _reqs[mode] == id;
     try {
       if (mode == Mode.correct) {
-        final out = await _claude.correct(text);
+        final r = await _claude.correct(text);
+        final out = r.corrected;
         if (!current()) return;
         final segs = diffSegments(text, out);
         setState(() {
           _corrected = out;
+          _suggestion = r.suggestion;
           _segs = segs;
           _fixes = segs.where((s) => s.changed).length;
           _phases[mode] = Phase.done;
@@ -347,7 +350,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     try {
       await api.createNote({
         'title': title,
-        'body': '$result\n\nOriginal: $original',
+        'body': [
+          result,
+          if (source == 'correct' && _suggestion.isNotEmpty)
+            'Better: $_suggestion',
+          'Original: $original',
+        ].join('\n\n'),
         'tags': [source],
         'source': source,
         'source_key': key,
@@ -1717,11 +1725,93 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 ),
               ],
             ),
+            if (_suggestion.isNotEmpty) ...[
+              SizedBox(height: web ? 16 : 14),
+              _suggestionBox(web: web),
+            ],
           ],
         ),
       ),
     );
   }
+
+  /// "Better way to say it": a more natural version than the plain fix,
+  /// with its own Copy and Use buttons.
+  Widget _suggestionBox({required bool web}) => Pop(
+    delay: const Duration(milliseconds: 250),
+    child: Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(web ? 16 : 14),
+      decoration: BoxDecoration(
+        color: TC.purpleTint,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: TC.purpleBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.auto_awesome_outlined,
+                size: 15,
+                color: TC.purple,
+              ),
+              const SizedBox(width: 6),
+              Text('BETTER WAY TO SAY IT', style: capsLabel(TC.purple)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SelectionArea(
+            child: Text(
+              _suggestion,
+              style: inter(size: web ? 17 : 16, height: web ? 1.7 : 1.6),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: CopyButton(
+                  label: 'Copy',
+                  copied: _copied['better'] == true,
+                  onTap: () => _copy('better', _suggestion),
+                  color: TC.purple,
+                  tint: TC.purpleTint,
+                  idleText: TC.purpleSoft,
+                  height: 42,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Pressable(
+                  onTap: () => _input.text = _suggestion,
+                  label: 'Use this version',
+                  radius: 14,
+                  child: Container(
+                    height: 42,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: TC.purple,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Text(
+                      'Use this',
+                      style: inter(
+                        size: 14,
+                        weight: FontWeight.w600,
+                        color: TC.bg,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
 
   /// "Save to notes" button for the top-right of a result card's header row
   /// (pushed right by a Spacer). Nothing without a backend.
