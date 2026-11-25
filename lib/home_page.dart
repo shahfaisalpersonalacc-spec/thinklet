@@ -146,6 +146,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool _voiceStarting = false; // ignore taps until the mic is up
   bool _heard = false; // any words in this recording?
   int _voiceSession = 0; // ignores late events from older recordings
+  bool _holdingMic = false; // finger/mouse is down on the mic
+  bool _tapMode = false; // quick tap: hands-free until silence or next tap
+  bool _stopWhenStarted = false; // let go before the mic was up
+  Timer? _holdTimer;
   Completer<void>? _engineEnded; // done when the engine has fully stopped
   String _speakIn = 'English';
 
@@ -228,6 +232,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _holdTimer?.cancel();
     for (final t in _copyTimers.values) {
       t.cancel();
     }
@@ -423,16 +428,70 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   // ------------------------------------------------------------------ voice
 
-  /// Mic button: start listening, or stop (which sends what was heard).
-  Future<void> _toggleVoice() async {
+  /// Silence that ends a tapped (hands-free) recording.
+  static const _tapPause = Duration(seconds: 8);
+
+  /// Mic pressed: hold to talk, or (if already recording) tap to stop.
+  void _micDown() {
     if (_voiceStarting) return; // double tap while starting
     if (_listening) {
-      _speech.stop(); // the final result / "done" status sends it
-      // Some engines never report back after stop: send anyway.
-      final session = _voiceSession;
-      Future.delayed(const Duration(milliseconds: 1500), () {
-        if (session == _voiceSession) _sendVoice();
-      });
+      _stopVoice();
+      return;
+    }
+    _holdingMic = true;
+    _tapMode = false;
+    _stopWhenStarted = false;
+    _holdTimer?.cancel();
+    // Still running when let go = it was a quick tap, not a hold.
+    _holdTimer = Timer(const Duration(milliseconds: 400), () {});
+    _toggleVoice();
+  }
+
+  /// Mic let go: after a hold, stop and send; after a quick tap, keep
+  /// listening hands-free until silence or the next tap.
+  void _micUp() {
+    if (!_holdingMic) return;
+    _holdingMic = false;
+    final heldLong = !(_holdTimer?.isActive ?? false);
+    _holdTimer?.cancel();
+    if (!heldLong) {
+      setState(() => _tapMode = true);
+      _applyTapPause();
+      return;
+    }
+    if (_listening && !_voiceStarting) {
+      _stopVoice();
+    } else {
+      _stopWhenStarted = true; // let go before the mic was even up
+    }
+    setState(() {});
+  }
+
+  void _applyTapPause() {
+    try {
+      if (_listening && _speech.isListening) {
+        _speech.changePauseFor(_tapPause);
+      }
+    } catch (_) {
+      // Not started yet: the "listening" status applies it.
+    }
+  }
+
+  /// Stop recording; the final result / "done" status sends it.
+  void _stopVoice() {
+    _speech.stop();
+    // Some engines never report back after stop: send anyway.
+    final session = _voiceSession;
+    Future.delayed(const Duration(milliseconds: 1500), () {
+      if (session == _voiceSession) _sendVoice();
+    });
+  }
+
+  /// Start listening (or stop, if already listening).
+  Future<void> _toggleVoice() async {
+    if (_voiceStarting) return;
+    if (_listening) {
+      _stopVoice();
       return;
     }
     if (_insecurePage) {
@@ -445,6 +504,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       await _startVoice();
     } finally {
       if (mounted) setState(() => _voiceStarting = false);
+    }
+    if (_stopWhenStarted && _listening) {
+      _stopWhenStarted = false;
+      _stopVoice();
     }
   }
 
@@ -522,12 +585,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       partialResults: true,
       cancelOnError: true,
       listenMode: ListenMode.dictation,
-      pauseFor: const Duration(seconds: 8), // time to start talking
+      // While held, only letting go ends it; tapped, silence ends it.
+      pauseFor: _tapMode ? _tapPause : const Duration(minutes: 2),
       listenFor: const Duration(minutes: 2),
     ),
   );
 
   void _onSpeechStatus(String status) {
+    if (status == 'listening' && _tapMode) _applyTapPause();
     if (status != 'done' && status != 'notListening') return;
     _markEngineEnded();
     // Some platforms end with a status but no final result: send anyway.
@@ -1518,8 +1583,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                             child: ExcludeSemantics(
                               child: Text(
                                 _listening
-                                    ? 'Listening… speak in $_speakIn'
-                                    : 'Type, paste, or tap the mic to speak…',
+                                    ? (_holdingMic
+                                          ? 'Listening… speak in $_speakIn, '
+                                                'let go to send'
+                                          : 'Listening… speak in $_speakIn')
+                                    : 'Type, paste, or hold the mic to speak…',
                                 style: inter(
                                   size: web ? 17 : 16,
                                   height: web ? 1.6 : 1.5,
@@ -1614,13 +1682,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   /// Mic: tap to talk, tap again to stop. Pulses lime while listening.
   Widget _micButton() => Tooltip(
-    message: _listening ? 'Stop and send' : 'Speak instead of typing',
+    message: _listening
+        ? (_holdingMic ? 'Let go to send' : 'Tap to stop and send')
+        : 'Hold to talk, or tap',
+    triggerMode: TooltipTriggerMode.manual, // no popup while holding
     child: Semantics(
       button: true,
       toggled: _listening,
       label: _listening ? 'Stop listening' : 'Speak',
-      child: GestureDetector(
-        onTap: _toggleVoice,
+      onTap: () {
+        _tapMode = true; // screen readers: tap to start, tap to stop
+        _toggleVoice();
+      },
+      child: Listener(
+        onPointerDown: (_) => _micDown(),
+        onPointerUp: (_) => _micUp(),
+        onPointerCancel: (_) => _micUp(),
         child: _listening
             ? const _MicPulse()
             : AnimatedOpacity(

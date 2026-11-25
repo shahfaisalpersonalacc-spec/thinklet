@@ -152,6 +152,37 @@ void main() {
     expect(find.text("I'm heading home."), findsOneWidget);
   });
 
+  testWidgets('hold the mic to talk, let go to send', (tester) async {
+    await start(tester);
+    final finger = await tester.startGesture(
+      tester.getCenter(find.bySemanticsLabel('Speak')),
+    );
+    await settle(tester); // holding for 2s
+    expect(
+      find.text('Listening… speak in English, let go to send'),
+      findsOneWidget,
+    );
+    speech.say('i going home'); // still talking, nothing sent yet
+    await settle(tester);
+    expect(asked, isEmpty);
+    await finger.up();
+    await settle(tester);
+    expect(asked.single, contains('i going home'));
+    expect(find.bySemanticsLabel('Speak'), findsOneWidget); // mic is idle
+  });
+
+  testWidgets('let go before saying anything: nothing is sent', (tester) async {
+    await start(tester);
+    final finger = await tester.startGesture(
+      tester.getCenter(find.bySemanticsLabel('Speak')),
+    );
+    await settle(tester);
+    await finger.up();
+    await settle(tester);
+    expect(asked, isEmpty);
+    expect(find.bySemanticsLabel('Speak'), findsOneWidget);
+  });
+
   testWidgets('tapping the mic again stops and sends what was heard', (
     tester,
   ) async {

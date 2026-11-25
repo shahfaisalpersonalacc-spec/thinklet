@@ -21,7 +21,7 @@ void main() {
 
     // Our own placeholder: shown when empty, hidden once there is text, and
     // never passed as hintText (web would copy it into the hidden HTML input).
-    const hint = 'Type, paste, or tap the mic to speak…';
+    const hint = 'Type, paste, or hold the mic to speak…';
     expect(find.text(hint), findsOneWidget);
     final field = tester.widget<TextField>(find.byType(TextField));
     expect(field.decoration?.hintText, isNull);
