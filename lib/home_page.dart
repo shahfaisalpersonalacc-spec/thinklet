@@ -522,8 +522,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       partialResults: true,
       cancelOnError: true,
       listenMode: ListenMode.dictation,
-      pauseFor: const Duration(seconds: 4), // time to start talking
-      listenFor: const Duration(seconds: 60),
+      pauseFor: const Duration(seconds: 8), // time to start talking
+      listenFor: const Duration(minutes: 2),
     ),
   );
 
