@@ -14,6 +14,8 @@ import 'package:thinklet/home_page.dart';
 class FakeSpeech extends SpeechToTextPlatform {
   String? locale;
   bool available = true;
+  int busyStarts = 0; // next N starts fail like a browser still closing
+  int starts = 0;
 
   @override
   Future<bool> hasPermission() async => available;
@@ -33,6 +35,11 @@ class FakeSpeech extends SpeechToTextPlatform {
     dynamic sampleRate = 0,
     SpeechListenOptions? options,
   }) async {
+    if (busyStarts > 0) {
+      busyStarts--;
+      throw StateError('InvalidStateError: recognition has already started');
+    }
+    starts++;
     locale = options?.localeId ?? localeId;
     onStatus?.call('listening');
     return true;
@@ -65,9 +72,14 @@ void main() {
   SpeechToTextPlatform.instance = speech;
   late List<String> asked; // texts sent to Claude
 
-  Future<void> start(WidgetTester tester) async {
+  Future<void> start(
+    WidgetTester tester, {
+    Size size = const Size(390, 900),
+  }) async {
     speech
       ..available = true
+      ..busyStarts = 0
+      ..starts = 0
       ..locale = null;
     asked = [];
     final fake = MockClient((req) async {
@@ -94,7 +106,7 @@ void main() {
       );
     });
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(390, 900);
+    tester.view.physicalSize = size;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
       MaterialApp(
@@ -152,6 +164,77 @@ void main() {
     await settle(tester);
     expect(asked.single, contains('i going home'));
     expect(find.bySemanticsLabel('Speak'), findsOneWidget); // mic is idle
+  });
+
+  testWidgets('stopping before saying anything does not re-send typed text', (
+    tester,
+  ) async {
+    await start(tester);
+    await tester.enterText(find.byType(TextField), 'typed earlier');
+    await tester.tap(find.bySemanticsLabel('Speak'));
+    await settle(tester);
+    await tester.tap(find.bySemanticsLabel('Stop listening'));
+    await settle(tester);
+    expect(asked, isEmpty);
+    expect(find.text('typed earlier'), findsOneWidget); // left alone
+    expect(find.bySemanticsLabel('Speak'), findsOneWidget);
+  });
+
+  testWidgets('mic busy from the last recording: retries instead of failing', (
+    tester,
+  ) async {
+    await start(tester);
+    speech.busyStarts = 1;
+    await tester.tap(find.bySemanticsLabel('Speak'));
+    await settle(tester);
+    expect(find.textContaining('Voice input'), findsNothing);
+    expect(find.bySemanticsLabel('Stop listening'), findsOneWidget);
+    speech.say('i going home', done: true);
+    await settle(tester);
+    expect(asked.single, contains('i going home'));
+  });
+
+  testWidgets('record, stop, record again right away: both work', (
+    tester,
+  ) async {
+    await start(tester, size: const Size(1200, 900)); // mic stays in view
+    for (final words in ['first one', 'second one']) {
+      await tester.tap(find.bySemanticsLabel('Speak'));
+      await settle(tester);
+      speech.say(words, done: true);
+      await settle(tester);
+    }
+    expect(asked, hasLength(2));
+    expect(asked.last, contains('second one'));
+  });
+
+  testWidgets('a new screen (after sign-out/in) still gets the voice', (
+    tester,
+  ) async {
+    await start(tester);
+    await tester.tap(find.bySemanticsLabel('Speak'));
+    await settle(tester);
+    speech.say('old screen', done: true);
+    await settle(tester);
+    await tester.pumpWidget(const SizedBox()); // screen closed
+    await start(tester); // fresh screen, same shared engine
+    await tester.tap(find.bySemanticsLabel('Speak'));
+    await settle(tester);
+    speech.say('new screen', done: true);
+    await settle(tester);
+    expect(asked.single, contains('new screen'));
+    expect(find.text("I'm heading home."), findsOneWidget);
+  });
+
+  testWidgets('double-tapping the mic starts only one recording', (
+    tester,
+  ) async {
+    await start(tester);
+    await tester.tap(find.bySemanticsLabel('Speak'));
+    await tester.tap(find.bySemanticsLabel('Speak'), warnIfMissed: false);
+    await settle(tester);
+    expect(speech.starts, 1); // never two recordings at once
+    expect(find.textContaining('Voice input'), findsNothing);
   });
 
   testWidgets('speak Urdu in Translate: the chosen speech language is used', (

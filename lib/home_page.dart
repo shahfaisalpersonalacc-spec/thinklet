@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import 'api.dart';
@@ -142,7 +143,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool _speechReady = false;
   bool _listening = false;
   bool _voiceRan = false; // this recording has already been sent
+  bool _voiceStarting = false; // ignore taps until the mic is up
+  bool _heard = false; // any words in this recording?
+  int _voiceSession = 0; // ignores late events from older recordings
+  Completer<void>? _engineEnded; // done when the engine has fully stopped
   String _speakIn = 'English';
+
+  void _markEngineEnded() {
+    final e = _engineEnded;
+    if (e != null && !e.isCompleted) e.complete();
+  }
+
   final _notesKey = GlobalKey<NotesPageState>();
   // "Save to notes": result fingerprint -> saved (true) or saving (false).
   final _savedNotes = <String, bool>{};
@@ -264,6 +275,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     final mode = _mode;
     final text = _input.text.trim();
     if (text.isEmpty || _phases[mode] == Phase.checking) return;
+    _cancelVoice(); // pressed Correct/Translate mid-recording: use the text
     if (_noKey) {
       setState(() => _errors[mode] = _noKeyMessage);
       return;
@@ -413,8 +425,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   /// Mic button: start listening, or stop (which sends what was heard).
   Future<void> _toggleVoice() async {
+    if (_voiceStarting) return; // double tap while starting
     if (_listening) {
-      await _speech.stop(); // the final result / "done" status sends it
+      _speech.stop(); // the final result / "done" status sends it
+      // Some engines never report back after stop: send anyway.
+      final session = _voiceSession;
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (session == _voiceSession) _sendVoice();
+      });
       return;
     }
     if (_insecurePage) {
@@ -422,11 +440,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _voiceFailed('insecure');
       return;
     }
+    setState(() => _voiceStarting = true);
+    try {
+      await _startVoice();
+    } finally {
+      if (mounted) setState(() => _voiceStarting = false);
+    }
+  }
+
+  Future<void> _startVoice() async {
     if (!_speechReady) {
       try {
         _speechReady = await _speech.initialize(
           onStatus: _onSpeechStatus,
-          onError: (e) => _voiceFailed(e.errorMsg),
+          onError: _onSpeechError,
         );
       } catch (_) {
         _speechReady = false;
@@ -436,54 +463,105 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         return;
       }
     }
+    // The engine is shared by the whole app and only takes callbacks on its
+    // first start: point it at this screen (it may be a new one after
+    // signing out and back in).
+    _speech.statusListener = _onSpeechStatus;
+    _speech.errorListener = _onSpeechError;
+
+    // The last recording may still be closing (the browser takes a moment).
+    final ended = _engineEnded;
+    if (ended != null && !ended.isCompleted) {
+      await ended.future.timeout(
+        const Duration(milliseconds: 1500),
+        onTimeout: () => _speech.cancel(),
+      );
+    }
     if (!mounted) return;
     FocusScope.of(context).unfocus();
+    final session = ++_voiceSession;
     setState(() {
       _listening = true;
       _voiceRan = false;
+      _heard = false;
       _errors[_mode] = null;
     });
+    _engineEnded = Completer<void>();
     try {
-      await _speech.listen(
-        onResult: (r) {
-          if (!mounted) return;
-          _input.value = TextEditingValue(
-            text: r.recognizedWords,
-            selection: TextSelection.collapsed(
-              offset: r.recognizedWords.length,
-            ),
-          );
-          if (r.finalResult) _sendVoice();
-        },
-        listenOptions: SpeechListenOptions(
-          localeId: speechLanguages[_speakIn],
-          partialResults: true,
-          cancelOnError: true,
-          listenMode: ListenMode.dictation,
-          pauseFor: const Duration(seconds: 3),
-          listenFor: const Duration(seconds: 60),
-        ),
-      );
+      await _listen(session);
     } catch (_) {
-      _voiceFailed('unavailable');
+      // The engine was still busy: reset it and try once more.
+      await _speech.cancel();
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      if (!mounted || session != _voiceSession || !_listening) return;
+      try {
+        _engineEnded = Completer<void>();
+        await _listen(session);
+      } catch (_) {
+        _markEngineEnded();
+        _voiceFailed('unavailable');
+      }
     }
   }
 
+  Future<void> _listen(int session) => _speech.listen(
+    onResult: (r) {
+      // Ignore late words from an older recording.
+      if (!mounted || session != _voiceSession || !_listening) return;
+      final words = r.recognizedWords;
+      if (words.trim().isEmpty) return;
+      _heard = true;
+      _input.value = TextEditingValue(
+        text: words,
+        selection: TextSelection.collapsed(offset: words.length),
+      );
+      if (r.finalResult) _sendVoice();
+    },
+    listenOptions: SpeechListenOptions(
+      localeId: speechLanguages[_speakIn],
+      partialResults: true,
+      cancelOnError: true,
+      listenMode: ListenMode.dictation,
+      pauseFor: const Duration(seconds: 4), // time to start talking
+      listenFor: const Duration(seconds: 60),
+    ),
+  );
+
   void _onSpeechStatus(String status) {
+    if (status != 'done' && status != 'notListening') return;
+    _markEngineEnded();
     // Some platforms end with a status but no final result: send anyway.
-    if (status == 'done' || status == 'notListening') _sendVoice();
+    _sendVoice();
+  }
+
+  void _onSpeechError(SpeechRecognitionError e) {
+    _markEngineEnded();
+    final code = e.errorMsg.toLowerCase();
+    // Stale errors, or the "aborted" we cause ourselves by cancelling.
+    if (!_listening || code.contains('abort')) return;
+    _voiceFailed(e.errorMsg);
   }
 
   /// Recording finished: run Correct or Translate on what was heard (once).
   void _sendVoice() {
     if (!mounted) return;
     final wasListening = _listening;
-    setState(() => _listening = false);
+    if (wasListening) setState(() => _listening = false);
     if (!wasListening || _voiceRan) return;
     _voiceRan = true;
     // End the recording session (and its timers) on every platform.
     if (_speech.isListening) _speech.stop();
-    if (_input.text.trim().isNotEmpty) _run();
+    // Nothing heard: leave whatever was typed alone, don't re-send it.
+    if (_heard && _input.text.trim().isNotEmpty) _run();
+  }
+
+  /// Stop recording without sending (left the page, pressed the button).
+  void _cancelVoice() {
+    if (!_listening) return;
+    _voiceRan = true;
+    _voiceSession++;
+    setState(() => _listening = false);
+    _speech.cancel();
   }
 
   /// Web page on plain http (e.g. a LAN address): browsers block the mic.
@@ -509,7 +587,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         : c.contains('language')
         ? '$_speakIn speech isn\'t supported here. Try another language.'
         : c == 'insecure'
-        ?'Browsers only allow the mic on https or localhost pages. '
+        ? 'Browsers only allow the mic on https or localhost pages. '
               'Open http://localhost:${Uri.base.port} on this PC, or the '
               'https website.'
         : c == 'unavailable'
@@ -1072,6 +1150,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   void _setTab(AppTab t) {
     if (_tab == t) return;
+    _cancelVoice(); // don't keep recording behind the Notes page
     FocusScope.of(context).unfocus();
     setState(() {
       _tab = t;
@@ -1544,18 +1623,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         onTap: _toggleVoice,
         child: _listening
             ? const _MicPulse()
-            : Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: TC.accentFaint,
-                  border: Border.all(color: TC.accent.withValues(alpha: 0.6)),
-                ),
-                child: const Icon(
-                  Icons.mic_none_rounded,
-                  size: 20,
-                  color: TC.accent,
+            : AnimatedOpacity(
+                opacity: _voiceStarting ? 0.5 : 1, // starting up
+                duration: const Duration(milliseconds: 150),
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: TC.accentFaint,
+                    border: Border.all(color: TC.accent.withValues(alpha: 0.6)),
+                  ),
+                  child: const Icon(
+                    Icons.mic_none_rounded,
+                    size: 20,
+                    color: TC.accent,
+                  ),
                 ),
               ),
       ),
