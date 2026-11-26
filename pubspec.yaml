@@ -50,6 +50,12 @@ dev_dependencies:
   flutter_launcher_icons: ^0.14.4
   speech_to_text_platform_interface: ^2.5.0
 
+# Our fixed copy of the Windows speech plugin (live words, keeps every phrase,
+# talks to Flutter on the UI thread). See packages/speech_to_text_windows.
+dependency_overrides:
+  speech_to_text_windows:
+    path: packages/speech_to_text_windows
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
